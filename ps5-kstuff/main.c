@@ -291,7 +291,7 @@ int get_proc_cr3(uint64_t pid, uint64_t* cr3, uint64_t* dmap_base)
     uint64_t vmspace = kread8(proc + 0x200);
     // TODO: i dont know when this shifted, may be an earlier fw, also, add this to offsets.c? 
     uint32_t fwver = r0gdb_get_fw_version() >> 16;
-    uint32_t vmspace_pmap_offset = (fwver >= 0x700 ? 0x2E8 : 0x2E0);
+    uint32_t vmspace_pmap_offset = (fwver >= 0x600 ? 0x2E8 : 0x2E0);
     uint64_t ptrs[2] = {0};
     copyout(ptrs, vmspace + vmspace_pmap_offset + 32, sizeof(ptrs));
     if (cr3) *cr3 = ptrs[1];
@@ -2784,10 +2784,33 @@ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
     #endif
     gdb_remote_syscall("write", 3, 0, (uintptr_t)1, (uintptr_t)"done\n", (uintptr_t)5);
     #ifndef DEBUG
-    notify("ps5-kstuff successfully loaded");
+    //notify("ps5-kstuff successfully loaded");
+    int major_bcd = (fwver >> 8) & 0xFF; 
+    int minor_bcd = fwver & 0xFF;
+
+    int major = (major_bcd >> 4) * 10 + (major_bcd & 0xF);
+    int minor_dec = (minor_bcd >> 4) * 10 + (minor_bcd & 0xF);
+
+    char msg[64], *p = msg;
+    char *hdr = "Welcome To Kstuff 1.6.4\nPlayStation 5 FW: ";
+    while (*hdr) *p++ = *hdr++;
+
+    if (major >= 10) *p++ = '0' + major / 10;
+    *p++ = '0' + major % 10;
+
+    *p++ = '.';
+    *p++ = '0' + minor_dec / 10;
+    *p++ = '0' + minor_dec % 10;
+	
+    char *ftr = "\nBy sleirsgoevy";
+    while (*ftr) *p++ = *ftr++;
+    *p = 0;
+
+    notify(msg);
     return 0;
 #endif
     asm volatile("ud2");
     return 0;
 }
+
 
