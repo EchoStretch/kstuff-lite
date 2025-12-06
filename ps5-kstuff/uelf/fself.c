@@ -175,6 +175,7 @@ int try_handle_fself_mailbox(uint64_t* regs, uint64_t lr)
         uint64_t ctx[8];
 		copy_from_kernel(
     		ctx,
+    		(fwver >= 0x1000) ? kpeek64(regs[RBP] - 232) :
     		(fwver >= 0x900) ? regs[R14] :
     		(fwver >= 0x800 && fwver <= 0x860) ? kpeek64(regs[RBP] - 240) :
     		regs[RBX],

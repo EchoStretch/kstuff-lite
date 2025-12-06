@@ -2854,7 +2854,7 @@ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
     int minor_dec = (minor_bcd >> 4) * 10 + (minor_bcd & 0xF);
 
     char msg[64], *p = msg;
-    char *hdr = "Welcome To Kstuff 1.6.5\nPlayStation 5 FW: ";
+    char *hdr = "Welcome To Kstuff 1.6.6\nPlayStation 5 FW: ";
     while (*hdr) *p++ = *hdr++;
 
     if (major >= 10) *p++ = '0' + major / 10;
