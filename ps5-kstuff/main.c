@@ -624,8 +624,6 @@ static int patch_shellcore(const struct shellcore_patch* patches, size_t n_patch
 #define gdb_remote_syscall(...)
 #endif
 
-void patch_app_db(void);
-
 static inline uint64_t rdtsc(void)
 {
     uint32_t eax, edx;
@@ -860,8 +858,6 @@ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
             notify("failed to patch shellcore");
         }
     }
-	
-    gdb_remote_syscall("write", 3, 0, (uintptr_t)1, (uintptr_t)"done\npatching app.db... ", (uintptr_t)24);
 
     gdb_remote_syscall("write", 3, 0, (uintptr_t)1, (uintptr_t)"done\n", (uintptr_t)5);
     #ifndef DEBUG
