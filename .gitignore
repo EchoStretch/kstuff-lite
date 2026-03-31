@@ -1,0 +1,33 @@
+refs/*
+
+# Local backup files.
+*_old
+
+# Build artifacts from lib/.
+/lib/*.o
+/lib/lib.a
+/lib/lib-ps5.a
+/lib/lib-elf.a
+/lib/lib-elf-ps5.a
+/lib/syscalls.asm
+/lib/syscalls-ps5.asm
+
+# Build artifacts from prosper0gdb/.
+/prosper0gdb/*.o
+/prosper0gdb/payload.elf
+/prosper0gdb/payload.bin
+
+# Build artifacts from ps5-kstuff-ldr/.
+/ps5-kstuff-ldr/kstuff.elf
+/ps5-kstuff-ldr/payload_bin.c
+
+# Build artifacts from ps5-kstuff/.
+/ps5-kstuff/kelf
+/ps5-kstuff/kelf.o
+/ps5-kstuff/payload.elf
+/ps5-kstuff/payload.bin
+/ps5-kstuff/structs.h
+/ps5-kstuff/structs.inc
+/ps5-kstuff/uelf/crt.o
+/ps5-kstuff/uelf/uelf
+/ps5-kstuff/uelf/uelf.bin

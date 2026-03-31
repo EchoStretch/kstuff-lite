@@ -1,0 +1,25 @@
+* text=auto eol=lf
+
+# Keep common text sources on LF across platforms.
+*.c text eol=lf
+*.h text eol=lf
+*.cpp text eol=lf
+*.hpp text eol=lf
+*.asm text eol=lf
+*.inc text eol=lf
+*.S text eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.xml text eol=lf
+*.sql text eol=lf
+*.mk text eol=lf
+Makefile text eol=lf
+.gitmodules text eol=lf
+
+# Preserve historical mixed line endings in this imported header.
+freebsd-headers/crypto/skipjack.h -text
