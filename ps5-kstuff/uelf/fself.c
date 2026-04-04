@@ -325,77 +325,11 @@ int try_handle_fself_mailbox(uint64_t* regs, uint64_t lr)
 {
     METRIC_TIME_START(start_cycles);
 #define RETURN_FSELF_MAILBOX(value) do { METRIC_TIME(fself_mailbox_cycles_total, fself_mailbox_cycles_max, start_cycles); return (value); } while(0)
-    if(lr == (uint64_t)sceSblServiceMailbox_lr_verifyHeader)
-    {
-        METRIC_INC(fself_mailbox_verify_header);
-        uint64_t self_context = regs[(FWVER >= 0x800) ? RBX : R14];
-        uint64_t ctx_data[8];
-        uint64_t self_header;
-			uint32_t size;
-        if(copy_from_kernel(&size, regs[RDX]+16, 4))
-            RETURN_FSELF_MAILBOX(0);
-        if(copy_from_kernel(ctx_data, self_context, sizeof(ctx_data)))
-            RETURN_FSELF_MAILBOX(0);
-        self_header = ctx_data[7];
-        remember_context_fself_info(self_context, self_header, size, ctx_data);
-        if(is_header_fself(self_header, size, 0, 0, 0, 0))
-        {
-            char fself_header_backup[(48 + mini_syscore_header_size + 15) & -16];
-            char mini_header[(mini_syscore_header_size + 15) & -16];
-            uint32_t original_size = size;
-            uint64_t trap_frame[6] = {
-                (uint64_t)doreti_iret,
-                MKTRAP(TRAP_FSELF, 1), 0, 0, 0, 0,
-            };
-            memcpy(fself_header_backup, trap_frame, 48);
-            if(copy_from_kernel(fself_header_backup+48, self_header, mini_syscore_header_size))
-                RETURN_FSELF_MAILBOX(0);
-            if(copy_from_kernel(mini_header, (uint64_t)mini_syscore_header, mini_syscore_header_size))
-                RETURN_FSELF_MAILBOX(0);
-            if(copy_to_kernel(self_header, mini_header, mini_syscore_header_size))
-                RETURN_FSELF_MAILBOX(0);
-            size = mini_syscore_header_size;
-            if(copy_to_kernel(regs[RDX]+16, &size, 4))
-            {
-                copy_to_kernel(self_header, fself_header_backup+48, mini_syscore_header_size);
-                RETURN_FSELF_MAILBOX(0);
-            }
-            if(push_stack_checked(regs, fself_header_backup, sizeof(fself_header_backup)))
-            {
-                copy_to_kernel(self_header, fself_header_backup+48, mini_syscore_header_size);
-                copy_to_kernel(regs[RDX]+16, &original_size, 4);
-                RETURN_FSELF_MAILBOX(0);
-            }
-            METRIC_INC(fself_mailbox_verify_header_emulated);
-        }
-    }
-    else if(lr == (uint64_t)sceSblServiceMailbox_lr_loadSelfSegment)
-    {
-        METRIC_INC(fself_mailbox_load_self_segment);
-        uint64_t ctx;
-        if(FWVER >= 0x1000)
-        {
-            if(kpeek64_checked(regs[RBP] - 232, &ctx))
-                RETURN_FSELF_MAILBOX(0);
-        }
-        else if(FWVER >= 0x900 && FWVER <= 0x960)
-            ctx = regs[R14];
-        else if(FWVER >= 0x800 && FWVER <= 0x860)
-        {
-            if(kpeek64_checked(regs[RBP] - 240, &ctx))
-                RETURN_FSELF_MAILBOX(0);
-        }
-        else
-            ctx = regs[RBX];
-        if(get_context_fself_info(ctx, 0, 0, 0, 0))
-        {
-            if(pop_stack_checked(regs, &regs[RIP], 8))
-                RETURN_FSELF_MAILBOX(0);
-            regs[RAX] = 0;
-            METRIC_INC(fself_mailbox_load_self_segment_emulated);
-        }
-    }
-    else if(lr == (uint64_t)sceSblServiceMailbox_lr_decryptSelfBlock)
+    /*
+     * Telemetry shows the mailbox hot order is decryptSelfBlock, decryptMultipleSelfBlocks,
+     * verifyHeader, then loadSelfSegment. Keep the common cases first and leave the logic unchanged.
+     */
+    if(lr == (uint64_t)sceSblServiceMailbox_lr_decryptSelfBlock)
     {
         METRIC_INC(fself_mailbox_decrypt_self_block);
         uint64_t ctx;
@@ -451,6 +385,82 @@ int try_handle_fself_mailbox(uint64_t* regs, uint64_t lr)
             METRIC_INC(fself_mailbox_decrypt_multiple_self_blocks_emulated);
         }
     }
+    else if(lr == (uint64_t)sceSblServiceMailbox_lr_verifyHeader)
+    {
+        METRIC_INC(fself_mailbox_verify_header);
+        uint64_t self_context = regs[(FWVER >= 0x800) ? RBX : R14];
+        uint64_t ctx_data[8];
+        uint64_t self_header;
+        uint32_t size;
+        if(copy_from_kernel(&size, regs[RDX]+16, 4))
+            RETURN_FSELF_MAILBOX(0);
+        if(kpeek64_checked(self_context + 56, &self_header))
+            RETURN_FSELF_MAILBOX(0);
+        if(!is_header_fself(self_header, size, 0, 0, 0, 0))
+            RETURN_FSELF_MAILBOX(1);
+        if(copy_from_kernel(ctx_data, self_context, sizeof(ctx_data)))
+            RETURN_FSELF_MAILBOX(0);
+        if(ctx_data[7] != self_header)
+        {
+            self_header = ctx_data[7];
+            if(!is_header_fself(self_header, size, 0, 0, 0, 0))
+                RETURN_FSELF_MAILBOX(1);
+        }
+        remember_context_fself_info(self_context, self_header, size, ctx_data);
+        char fself_header_backup[(48 + mini_syscore_header_size + 15) & -16];
+        char mini_header[(mini_syscore_header_size + 15) & -16];
+        uint32_t original_size = size;
+        uint64_t trap_frame[6] = {
+            (uint64_t)doreti_iret,
+            MKTRAP(TRAP_FSELF, 1), 0, 0, 0, 0,
+        };
+        memcpy(fself_header_backup, trap_frame, 48);
+        if(copy_from_kernel(fself_header_backup+48, self_header, mini_syscore_header_size))
+            RETURN_FSELF_MAILBOX(0);
+        if(copy_from_kernel(mini_header, (uint64_t)mini_syscore_header, mini_syscore_header_size))
+            RETURN_FSELF_MAILBOX(0);
+        if(copy_to_kernel(self_header, mini_header, mini_syscore_header_size))
+            RETURN_FSELF_MAILBOX(0);
+        size = mini_syscore_header_size;
+        if(copy_to_kernel(regs[RDX]+16, &size, 4))
+        {
+            copy_to_kernel(self_header, fself_header_backup+48, mini_syscore_header_size);
+            RETURN_FSELF_MAILBOX(0);
+        }
+        if(push_stack_checked(regs, fself_header_backup, sizeof(fself_header_backup)))
+        {
+            copy_to_kernel(self_header, fself_header_backup+48, mini_syscore_header_size);
+            copy_to_kernel(regs[RDX]+16, &original_size, 4);
+            RETURN_FSELF_MAILBOX(0);
+        }
+        METRIC_INC(fself_mailbox_verify_header_emulated);
+    }
+    else if(lr == (uint64_t)sceSblServiceMailbox_lr_loadSelfSegment)
+    {
+        METRIC_INC(fself_mailbox_load_self_segment);
+        uint64_t ctx;
+        if(FWVER >= 0x1000)
+        {
+            if(kpeek64_checked(regs[RBP] - 232, &ctx))
+                RETURN_FSELF_MAILBOX(0);
+        }
+        else if(FWVER >= 0x900 && FWVER <= 0x960)
+            ctx = regs[R14];
+        else if(FWVER >= 0x800 && FWVER <= 0x860)
+        {
+            if(kpeek64_checked(regs[RBP] - 240, &ctx))
+                RETURN_FSELF_MAILBOX(0);
+        }
+        else
+            ctx = regs[RBX];
+        if(get_context_fself_info(ctx, 0, 0, 0, 0))
+        {
+            if(pop_stack_checked(regs, &regs[RIP], 8))
+                RETURN_FSELF_MAILBOX(0);
+            regs[RAX] = 0;
+            METRIC_INC(fself_mailbox_load_self_segment_emulated);
+        }
+    }
     else
         RETURN_FSELF_MAILBOX(0);
 
@@ -462,7 +472,44 @@ int try_handle_fself_trap(uint64_t* regs)
 {
     METRIC_TIME_START(start_cycles);
 #define RETURN_FSELF_TRAP(value) do { METRIC_TIME(fself_trap_cycles_total, fself_trap_cycles_max, start_cycles); return (value); } while(0)
-    if(regs[RIP] == (uint64_t)sceSblAuthMgrSmIsLoadable2)
+    /*
+     * The hot trap order is watchpoint, epilogue, then SmIsLoadable2.
+     * Keep the common exact-RIP matches first.
+     */
+    if(regs[RIP] == (uint64_t)loadSelfSegment_watchpoint)
+    {
+        METRIC_INC(fself_trap_watchpoint);
+        uint64_t frame[4];
+        if(copy_from_kernel(frame, regs[RSP], sizeof(frame)))
+            RETURN_FSELF_TRAP(1);
+        regs[(FWVER >= 0x800) ? RAX : R10] |= 0xffffull << 48;
+        if(frame[3] == (uint64_t)loadSelfSegment_watchpoint_lr)
+        {
+            if(!set_dbgregs_for_watchpoint(regs, dbgregs_for_loadSelfSegment, sizeof(frame)))
+                RETURN_FSELF_TRAP(1);
+        }
+        else if(frame[3] == (uint64_t)decryptSelfBlock_watchpoint_lr)
+        {
+            if(!set_dbgregs_for_watchpoint(regs, dbgregs_for_decryptSelfBlock, sizeof(frame)))
+                RETURN_FSELF_TRAP(1);
+        }
+        else if(frame[3] == (uint64_t)decryptMultipleSelfBlocks_watchpoint_lr)
+        {
+            if(!set_dbgregs_for_watchpoint(regs, dbgregs_for_decryptMultipleSelfBlocks, sizeof(frame)))
+                RETURN_FSELF_TRAP(1);
+        }
+        METRIC_INC(fself_trap_watchpoint_emulated);
+    }
+    else if(regs[RIP] == (uint64_t)loadSelfSegment_epilogue
+         || regs[RIP] == (uint64_t)decryptSelfBlock_epilogue
+         || regs[RIP] == (uint64_t)decryptMultipleSelfBlocks_epilogue)
+    {
+         METRIC_INC(fself_trap_epilogue);
+         if(!unset_dbgregs_for_watchpoint(regs))
+             RETURN_FSELF_TRAP(1);
+         METRIC_INC(fself_trap_epilogue_emulated);
+    }
+    else if(regs[RIP] == (uint64_t)sceSblAuthMgrSmIsLoadable2)
     {
         METRIC_INC(fself_trap_is_loadable2);
         uint16_t e_type;
@@ -500,39 +547,6 @@ int try_handle_fself_trap(uint64_t* regs)
             regs[RAX] = 0;
             METRIC_INC(fself_trap_is_loadable2_emulated);
         }
-    }
-    else if(regs[RIP] == (uint64_t)loadSelfSegment_watchpoint)
-    {
-        METRIC_INC(fself_trap_watchpoint);
-        uint64_t frame[4];
-        if(copy_from_kernel(frame, regs[RSP], sizeof(frame)))
-            RETURN_FSELF_TRAP(1);
-        regs[(FWVER >= 0x800) ? RAX : R10] |= 0xffffull << 48;
-        if(frame[3] == (uint64_t)loadSelfSegment_watchpoint_lr)
-        {
-            if(!set_dbgregs_for_watchpoint(regs, dbgregs_for_loadSelfSegment, sizeof(frame)))
-                RETURN_FSELF_TRAP(1);
-        }
-        else if(frame[3] == (uint64_t)decryptSelfBlock_watchpoint_lr)
-        {
-            if(!set_dbgregs_for_watchpoint(regs, dbgregs_for_decryptSelfBlock, sizeof(frame)))
-                RETURN_FSELF_TRAP(1);
-        }
-        else if(frame[3] == (uint64_t)decryptMultipleSelfBlocks_watchpoint_lr)
-        {
-            if(!set_dbgregs_for_watchpoint(regs, dbgregs_for_decryptMultipleSelfBlocks, sizeof(frame)))
-                RETURN_FSELF_TRAP(1);
-        }
-        METRIC_INC(fself_trap_watchpoint_emulated);
-    }
-    else if(regs[RIP] == (uint64_t)loadSelfSegment_epilogue
-         || regs[RIP] == (uint64_t)decryptSelfBlock_epilogue
-         || regs[RIP] == (uint64_t)decryptMultipleSelfBlocks_epilogue)
-    {
-         METRIC_INC(fself_trap_epilogue);
-         if(!unset_dbgregs_for_watchpoint(regs))
-             RETURN_FSELF_TRAP(1);
-         METRIC_INC(fself_trap_epilogue_emulated);
     }
     else
         RETURN_FSELF_TRAP(0);
