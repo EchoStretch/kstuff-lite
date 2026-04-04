@@ -198,8 +198,6 @@ struct kstuff_metrics
 
     uint64_t virt2phys_calls;
     uint64_t virt2phys_failures;
-    uint64_t virt2phys_local_hits;
-    uint64_t virt2phys_local_misses;
     uint64_t copy_from_calls;
     uint64_t copy_from_bytes;
     uint64_t copy_from_failures;
@@ -295,11 +293,11 @@ extern struct shared_area_layout shared_area;
 #define METRIC_MAX(field, value) do { (void)(value); } while(0)
 #endif
 
-_Static_assert(sizeof(struct kstuff_metrics) == 1536, "unexpected metrics size");
+_Static_assert(sizeof(struct kstuff_metrics) == 1520, "unexpected metrics size");
 _Static_assert(sizeof(struct kstuff_word_log) == 264, "unexpected word log size");
 _Static_assert(sizeof(struct kstuff_ioctl_com_entry) == 24, "unexpected ioctl com entry size");
 _Static_assert(sizeof(struct kstuff_ioctl_com_table) == 3088, "unexpected ioctl com table size");
 _Static_assert(sizeof(struct kstuff_msg_log) == 504, "unexpected message log size");
-_Static_assert(sizeof(struct kstuff_snapshot) == 5408, "unexpected snapshot size");
-_Static_assert(sizeof(struct shared_area_layout) == 7440, "unexpected shared_area size");
+_Static_assert(sizeof(struct kstuff_snapshot) == 5392, "unexpected snapshot size");
+_Static_assert(sizeof(struct shared_area_layout) == 7424, "unexpected shared_area size");
 _Static_assert(sizeof(struct shared_area_layout) <= SHARED_AREA_SIZE, "shared_area must fit in configured mapping");
