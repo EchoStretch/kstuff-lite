@@ -79,6 +79,13 @@ static void print_metrics(const struct kstuff_metrics* metrics)
     PRINT_FIELD("r15", metrics->debug_reg_decrypt_r15);
     fputc('\n', stdout);
 
+    fprintf(stdout, "decrypt_patterns");
+    PRINT_FIELD("rsi_only", metrics->debug_reg_decrypt_rsi_only_events);
+    PRINT_FIELD("rsi_multi", metrics->debug_reg_decrypt_rsi_multi_events);
+    PRINT_FIELD("non_rsi_single", metrics->debug_reg_decrypt_non_rsi_single_events);
+    PRINT_FIELD("non_rsi_multi", metrics->debug_reg_decrypt_non_rsi_multi_events);
+    fputc('\n', stdout);
+
     fprintf(stdout, "dispatch");
     PRINT_FIELD("kekcall", metrics->syscall_kekcall_dispatches);
     PRINT_FIELD("fself", metrics->syscall_fself_dispatches);
@@ -123,8 +130,6 @@ static void print_metrics(const struct kstuff_metrics* metrics)
     PRINT_FIELD("skipped", metrics->xts_run_skip_sectors);
     PRINT_FIELD("direct_runs", metrics->xts_full_direct_runs);
     PRINT_FIELD("direct_sectors", metrics->xts_full_direct_sectors);
-    PRINT_FIELD("src_linear", metrics->xts_src_linear_only_sectors);
-    PRINT_FIELD("dst_linear", metrics->xts_dst_linear_only_sectors);
     PRINT_FIELD("fallback", metrics->xts_full_fallback_sectors);
     fputc('\n', stdout);
 
@@ -164,15 +169,6 @@ static void print_metrics(const struct kstuff_metrics* metrics)
     PRINT_FIELD("out", metrics->copy_to_calls);
     PRINT_FIELD("out_bytes", metrics->copy_to_bytes);
     PRINT_FIELD("out_fail", metrics->copy_to_failures);
-    fputc('\n', stdout);
-
-    fprintf(stdout, "copy_local");
-    PRINT_FIELD("in", metrics->local_copy_from_calls);
-    PRINT_FIELD("in_bytes", metrics->local_copy_from_bytes);
-    PRINT_FIELD("in_fail", metrics->local_copy_from_failures);
-    PRINT_FIELD("out", metrics->local_copy_to_calls);
-    PRINT_FIELD("out_bytes", metrics->local_copy_to_bytes);
-    PRINT_FIELD("out_fail", metrics->local_copy_to_failures);
     fputc('\n', stdout);
 
     fprintf(stdout, "obs");

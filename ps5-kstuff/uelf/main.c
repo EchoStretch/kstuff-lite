@@ -225,23 +225,24 @@ from_userspace:
     else
     {
         int decrypted = 0;
-#define DECRYPT(which, field) if((regs[which] >> 48) == 0xdeb7) { regs[which] |= 0xffffull << 48; decrypted = 1; METRIC_INC(debug_reg_decrypt_events); METRIC_INC(field); }
-        DECRYPT(RAX, debug_reg_decrypt_rax)
-        DECRYPT(RCX, debug_reg_decrypt_rcx)
-        DECRYPT(RDX, debug_reg_decrypt_rdx)
-        DECRYPT(RBX, debug_reg_decrypt_rbx)
+        uint32_t decrypt_mask = 0;
+#define DECRYPT(which, bit, field) if((regs[which] >> 48) == 0xdeb7) { regs[which] |= 0xffffull << 48; decrypted = 1; decrypt_mask |= (1u << (bit)); METRIC_INC(debug_reg_decrypt_events); METRIC_INC(field); }
+        DECRYPT(RAX, 0, debug_reg_decrypt_rax)
+        DECRYPT(RCX, 1, debug_reg_decrypt_rcx)
+        DECRYPT(RDX, 2, debug_reg_decrypt_rdx)
+        DECRYPT(RBX, 3, debug_reg_decrypt_rbx)
         //DECRYPT(RSP, 4)
-        DECRYPT(RBP, debug_reg_decrypt_rbp)
-        DECRYPT(RSI, debug_reg_decrypt_rsi)
-        DECRYPT(RDI, debug_reg_decrypt_rdi)
-        DECRYPT(R8, debug_reg_decrypt_r8)
-        DECRYPT(R9, debug_reg_decrypt_r9)
-        DECRYPT(R10, debug_reg_decrypt_r10)
-        DECRYPT(R11, debug_reg_decrypt_r11)
-        DECRYPT(R12, debug_reg_decrypt_r12)
-        DECRYPT(R13, debug_reg_decrypt_r13)
-        DECRYPT(R14, debug_reg_decrypt_r14)
-        DECRYPT(R15, debug_reg_decrypt_r15)
+        DECRYPT(RBP, 5, debug_reg_decrypt_rbp)
+        DECRYPT(RSI, 6, debug_reg_decrypt_rsi)
+        DECRYPT(RDI, 7, debug_reg_decrypt_rdi)
+        DECRYPT(R8, 8, debug_reg_decrypt_r8)
+        DECRYPT(R9, 9, debug_reg_decrypt_r9)
+        DECRYPT(R10, 10, debug_reg_decrypt_r10)
+        DECRYPT(R11, 11, debug_reg_decrypt_r11)
+        DECRYPT(R12, 12, debug_reg_decrypt_r12)
+        DECRYPT(R13, 13, debug_reg_decrypt_r13)
+        DECRYPT(R14, 14, debug_reg_decrypt_r14)
+        DECRYPT(R15, 15, debug_reg_decrypt_r15)
 #undef DECRYPT
         if(!decrypted)
         {
@@ -251,6 +252,14 @@ from_userspace:
             log_word(regs[RIP]);
             log_word(16);
         }
+        else if(decrypt_mask == (1u << 6))
+            METRIC_INC(debug_reg_decrypt_rsi_only_events);
+        else if(decrypt_mask & (1u << 6))
+            METRIC_INC(debug_reg_decrypt_rsi_multi_events);
+        else if(!(decrypt_mask & (decrypt_mask - 1)))
+            METRIC_INC(debug_reg_decrypt_non_rsi_single_events);
+        else
+            METRIC_INC(debug_reg_decrypt_non_rsi_multi_events);
     }
 }
 

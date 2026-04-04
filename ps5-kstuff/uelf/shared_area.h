@@ -9,7 +9,7 @@
 enum {
     SHARED_FAKE_KEY_SLOTS = 63,
     SHARED_LOG_WORD_CAP = 16,
-    SHARED_LOG_MSG_CAP = 976,
+    SHARED_LOG_MSG_CAP = 1016,
 };
 
 struct kstuff_metrics
@@ -33,7 +33,10 @@ struct kstuff_metrics
     uint64_t debug_reg_decrypt_r13;
     uint64_t debug_reg_decrypt_r14;
     uint64_t debug_reg_decrypt_r15;
-    uint64_t debug_reg_decrypt_reserved;
+    uint64_t debug_reg_decrypt_rsi_only_events;
+    uint64_t debug_reg_decrypt_rsi_multi_events;
+    uint64_t debug_reg_decrypt_non_rsi_single_events;
+    uint64_t debug_reg_decrypt_non_rsi_multi_events;
     uint64_t debug_unhandled_traps;
     uint64_t mailbox_traps;
     uint64_t mailbox_fself;
@@ -87,8 +90,6 @@ struct kstuff_metrics
 
     uint64_t xts_full_direct_runs;
     uint64_t xts_full_direct_sectors;
-    uint64_t xts_src_linear_only_sectors;
-    uint64_t xts_dst_linear_only_sectors;
     uint64_t xts_full_fallback_sectors;
 
     uint64_t verify_superblock_mailbox;
@@ -110,12 +111,6 @@ struct kstuff_metrics
     uint64_t copy_to_calls;
     uint64_t copy_to_bytes;
     uint64_t copy_to_failures;
-    uint64_t local_copy_from_calls;
-    uint64_t local_copy_from_bytes;
-    uint64_t local_copy_from_failures;
-    uint64_t local_copy_to_calls;
-    uint64_t local_copy_to_bytes;
-    uint64_t local_copy_to_failures;
 
     uint64_t shared_area_snapshots;
     uint64_t log_word_writes;
@@ -172,8 +167,8 @@ extern struct shared_area_layout shared_area;
 #define METRIC_ADD(field, value) do { (void)(value); } while(0)
 #endif
 
-_Static_assert(sizeof(struct kstuff_metrics) == 792, "unexpected metrics size");
+_Static_assert(sizeof(struct kstuff_metrics) == 752, "unexpected metrics size");
 _Static_assert(sizeof(struct kstuff_word_log) == 264, "unexpected word log size");
-_Static_assert(sizeof(struct kstuff_msg_log) == 992, "unexpected message log size");
+_Static_assert(sizeof(struct kstuff_msg_log) == 1032, "unexpected message log size");
 _Static_assert(sizeof(struct kstuff_snapshot) == 2064, "unexpected snapshot size");
 _Static_assert(sizeof(struct shared_area_layout) == 4096, "shared_area must fit in one page");
