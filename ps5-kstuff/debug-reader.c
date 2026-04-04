@@ -167,6 +167,12 @@ static void print_metrics(const struct kstuff_metrics* metrics)
     PRINT_FIELD("fix_traps", metrics->syscall_fix_traps);
     tee_putc('\n');
 
+    tee_printf("ioctl_prefilter");
+    PRINT_FIELD("allowed", metrics->ioctl_prefilter_allowed);
+    PRINT_FIELD("skipped", metrics->ioctl_prefilter_skipped);
+    PRINT_FIELD("copy_fail_open", metrics->ioctl_prefilter_copy_in_fail_open);
+    tee_putc('\n');
+
     tee_printf("cycles");
     PRINT_FIELD("handle_total", metrics->handle_cycles_total);
     PRINT_FIELD("handle_max", metrics->handle_cycles_max);

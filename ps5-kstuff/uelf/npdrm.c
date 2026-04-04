@@ -1,6 +1,7 @@
 // https://github.com/PS5Dev/Byepervisor/blob/57204cbd7bd26ed4623634d52b0f60f40d630087/hen/src/fpkg.cpp#L82
 
 #include <string.h>
+#include <sys/ioccom.h>
 #include <sys/sysproto.h>
 #include "utils.h"
 #include "npdrm.h"
@@ -22,14 +23,25 @@ extern char sceSblServiceMailbox[];
 static const uint8_t rif_debug_key[] = {0x96, 0xC2, 0x26, 0x8D, 0x69, 0x26, 0x1C, 0x8B, 0x1E, 0x3B, 0x6B, 0xFF, 0x2F, 0xE0, 0x4E, 0x12};
 
 enum { AES128_EXPKEY_SIZE = 16 * 11 };
+enum {
+    NPDRM_EXPECT_CMD5 = 1u << 0,
+    NPDRM_EXPECT_CMD6 = 1u << 1,
+};
 
-#if KSTUFF_OBS
 static struct
 {
+#if KSTUFF_OBS
     uint64_t com;
-    int valid;
-} s_current_ioctl_com;
 #endif
+    uint8_t expected_cmd_mask;
+    uint8_t valid;
+} s_current_ioctl_state;
+
+void finish_npdrm_ioctl_state(void)
+{
+    s_current_ioctl_state.expected_cmd_mask = 0;
+    s_current_ioctl_state.valid = 0;
+}
 
 static struct
 {
@@ -93,6 +105,7 @@ int try_handle_npdrm_mailbox(uint64_t *regs, uint64_t lr)
         uint32_t _pad;
         uint64_t rif_pa;
     } request_hdr;
+    uint32_t cmd;
 #ifndef NPDRM_PORTING
     if (lr != (uint64_t)sceSblServiceMailbox_lr_npdrm_cmd_5 &&
         lr != (uint64_t)sceSblServiceMailbox_lr_npdrm_cmd_6)
@@ -100,9 +113,24 @@ int try_handle_npdrm_mailbox(uint64_t *regs, uint64_t lr)
         METRIC_INC(npdrm_reject_bad_lr);
         RETURN_NPDRM(0);
     }
+    cmd = (lr == (uint64_t)sceSblServiceMailbox_lr_npdrm_cmd_5) ? 5u : 6u;
+    if (s_current_ioctl_state.valid)
+    {
+        const uint8_t lr_cmd_mask = (cmd == 5u) ? NPDRM_EXPECT_CMD5 : NPDRM_EXPECT_CMD6;
+        if (!(s_current_ioctl_state.expected_cmd_mask & lr_cmd_mask))
+        {
+            METRIC_INC(npdrm_reject_bad_cmd);
+            RETURN_NPDRM(1);
+        }
+    }
     if (copy_from_kernel(&request_hdr, regs[RDX], sizeof(request_hdr)))
     {
         METRIC_INC(npdrm_reject_copy_in_fail);
+        RETURN_NPDRM(1);
+    }
+    if (request_hdr.cmd != cmd)
+    {
+        METRIC_INC(npdrm_reject_bad_cmd);
         RETURN_NPDRM(1);
     }
 #else
@@ -119,19 +147,18 @@ int try_handle_npdrm_mailbox(uint64_t *regs, uint64_t lr)
         METRIC_INC(npdrm_reject_bad_cmd);
         RETURN_NPDRM(0);
     }
+    cmd = request_hdr.cmd;
 #endif
     METRIC_INC(npdrm_mailbox_total);
-    if(request_hdr.cmd == 5)
+    if(cmd == 5)
         METRIC_INC(npdrm_cmd5);
-    else if(request_hdr.cmd == 6)
+    else if(cmd == 6)
         METRIC_INC(npdrm_cmd6);
 
     uint64_t rif_pa = request_hdr.rif_pa;
+    const struct Rif* rif = (const struct Rif*)(DMEM + rif_pa);
 
-    struct RifCmd56MemoryLayout layout;
-    memcpy(&layout, DMEM + rif_pa, sizeof(layout));
-
-    if (layout.rif.type != 0x2)
+    if (rif->type != 0x2)
     {
         METRIC_INC(npdrm_reject_bad_rif_type);
 #ifdef NPDRM_PORTING
@@ -151,7 +178,7 @@ int try_handle_npdrm_mailbox(uint64_t *regs, uint64_t lr)
 #endif
     }
     uint8_t contentid_hash[32];
-    if (sha256_buffer_fpu_held(layout.rif.contentId, sizeof(layout.rif.contentId), contentid_hash))
+    if (sha256_buffer_fpu_held(rif->contentId, sizeof(rif->contentId), contentid_hash))
     {
         uelf_fpu_exit();
         METRIC_INC(npdrm_reject_bad_hash);
@@ -162,7 +189,7 @@ int try_handle_npdrm_mailbox(uint64_t *regs, uint64_t lr)
 #endif
     }
 
-    if (memcmp(contentid_hash, layout.rif.rifIv, 16) != 0)
+    if (memcmp(contentid_hash, rif->rifIv, 16) != 0)
     {
         uelf_fpu_exit();
         METRIC_INC(npdrm_reject_bad_hash);
@@ -177,50 +204,24 @@ int try_handle_npdrm_mailbox(uint64_t *regs, uint64_t lr)
 
 #ifdef NPDRM_PORTING
     // Now that we know the input data is a (debug) rif, we know we are at the right place
-    log_word(0x10C7100000000001UL + ((uint64_t)request_hdr.cmd << 16));
+    log_word(0x10C7100000000001UL + ((uint64_t)cmd << 16));
     log_word(lr);
 #endif
 
-    layout.output.version = __builtin_bswap16(layout.rif.version);
-    layout.output.unk04 = __builtin_bswap16(layout.rif.unk06);
-    layout.output.psnid = __builtin_bswap64(layout.rif.psnid);
-    layout.output.startTimestamp = __builtin_bswap64(layout.rif.startTimestamp);
-    layout.output.endTimestamp = __builtin_bswap64(layout.rif.endTimestamp);
-    layout.output.extraFlags = __builtin_bswap64(layout.rif.extraFlags);
-    layout.output.type = __builtin_bswap16(layout.rif.type);
-    layout.output.contentType = __builtin_bswap16(layout.rif.contentType);
-    layout.output.skuFlag = __builtin_bswap16(layout.rif.skuFlag);
-    layout.output.unk34 = __builtin_bswap32(layout.rif.unk60);
-    layout.output.unk38 = __builtin_bswap32(layout.rif.unk64);
-    layout.output.unk3C = 0;
-    layout.output.unk40 = 0;
-    layout.output.unk44 = 0;
-    memcpy(layout.output.contentId, layout.rif.contentId, 0x30);
-    memcpy(layout.output.rifIv, layout.rif.rifIv, 0x10);
-    layout.output.unk88 = __builtin_bswap32(layout.rif.unk70);
-    layout.output.unk8C = __builtin_bswap32(layout.rif.unk74);
-    layout.output.unk90 = __builtin_bswap32(layout.rif.unk78);
-    layout.output.unk94 = __builtin_bswap32(layout.rif.unk7C);
-    memcpy(layout.output.unk98, layout.rif.unk80, 0x10);
-    if (layout.output.skuFlag == 2)
-    {
-        layout.output.skuFlag = 1;
-    }
-
 #ifdef NPDRM_PORTING
-    if (request_hdr.cmd == 6)
+    if (cmd == 6)
 #else
-    if (lr == (uint64_t)sceSblServiceMailbox_lr_npdrm_cmd_6)
+    if (cmd == 6)
 #endif
+    {
+        uint8_t decrypted_secret[sizeof(rif->rifSecret)];
+        if (aes_cbc_128_decrypt_rif_debug_fpu_held(decrypted_secret, rif->rifSecret,
+                                                   sizeof(rif->rifSecret), rif->rifIv))
         {
-            uint8_t decrypted_secret[sizeof(layout.rif.rifSecret)];
-            if (aes_cbc_128_decrypt_rif_debug_fpu_held(decrypted_secret, layout.rif.rifSecret,
-                                                       sizeof(layout.rif.rifSecret), layout.rif.rifIv))
-            {
-                uelf_fpu_exit();
-                METRIC_INC(npdrm_reject_bad_secret);
-                RETURN_NPDRM(1);
-            }
+            uelf_fpu_exit();
+            METRIC_INC(npdrm_reject_bad_secret);
+            RETURN_NPDRM(1);
+        }
 
         if (memcmp(contentid_hash + 16, decrypted_secret, 16) != 0)
         {
@@ -239,11 +240,36 @@ int try_handle_npdrm_mailbox(uint64_t *regs, uint64_t lr)
         }
     }
 
-    memcpy(DMEM + rif_pa + __builtin_offsetof(struct RifCmd56MemoryLayout, output), &layout.output, sizeof(layout.output));
+    struct RifOutput output;
+    output.version = __builtin_bswap16(rif->version);
+    output.unk04 = __builtin_bswap16(rif->unk06);
+    output.psnid = __builtin_bswap64(rif->psnid);
+    output.startTimestamp = __builtin_bswap64(rif->startTimestamp);
+    output.endTimestamp = __builtin_bswap64(rif->endTimestamp);
+    output.extraFlags = __builtin_bswap64(rif->extraFlags);
+    output.type = __builtin_bswap16(rif->type);
+    output.contentType = __builtin_bswap16(rif->contentType);
+    output.skuFlag = __builtin_bswap16(rif->skuFlag);
+    output.unk34 = __builtin_bswap32(rif->unk60);
+    output.unk38 = __builtin_bswap32(rif->unk64);
+    output.unk3C = 0;
+    output.unk40 = 0;
+    output.unk44 = 0;
+    memcpy(output.contentId, rif->contentId, sizeof(output.contentId));
+    memcpy(output.rifIv, rif->rifIv, sizeof(output.rifIv));
+    output.unk88 = __builtin_bswap32(rif->unk70);
+    output.unk8C = __builtin_bswap32(rif->unk74);
+    output.unk90 = __builtin_bswap32(rif->unk78);
+    output.unk94 = __builtin_bswap32(rif->unk7C);
+    memcpy(output.unk98, rif->unk80, sizeof(output.unk98));
+    if (output.skuFlag == 2)
+        output.skuFlag = 1;
+
+    memcpy(DMEM + rif_pa + __builtin_offsetof(struct RifCmd56MemoryLayout, output), &output, sizeof(output));
     METRIC_INC(npdrm_mailbox_emulated);
 #if KSTUFF_OBS
-    if(s_current_ioctl_com.valid)
-        observe_ioctl_com_emulated(s_current_ioctl_com.com, request_hdr.cmd);
+    if(s_current_ioctl_state.valid)
+        observe_ioctl_com_emulated(s_current_ioctl_state.com, cmd);
 #endif
     observe_current_syscall_emulated();
 
@@ -267,18 +293,94 @@ static const uint64_t dbgregs_for_ioctl[6] = {
     (uint64_t)sceSblServiceMailbox, 0, 0, 0,
     0, 0x401};
 
+static uint8_t classify_npdrm_ioctl(uint64_t com)
+{
+    const uint32_t dir = (uint32_t)(com & IOC_DIRMASK);
+    const uint32_t len = IOCPARM_LEN(com);
+    const uint32_t group = IOCGROUP(com);
+    const uint32_t num = (uint32_t)(com & 0xff);
+
+    /*
+     * Hot path from observed logs:
+     *   IOC_INOUT + group 'N' (0x4e)
+     * with the useful commands clustered in len=0x20 and len=0x34.
+     *
+     * Keep the rest of the known-good commands in the rare exact tail below
+     * so coverage stays the same while the common case gets cheaper.
+     */
+    if(__builtin_expect(dir == IOC_INOUT && group == 0x4e, 1))
+    {
+        if(len == 0x20)
+        {
+            if(num == 0x0d || num == 0x0e)
+                return NPDRM_EXPECT_CMD5 | NPDRM_EXPECT_CMD6;
+            if(num == 0x16)
+                return NPDRM_EXPECT_CMD6;
+        }
+        else if(len == 0x34 && num == 0x18)
+            return NPDRM_EXPECT_CMD6;
+    }
+
+    switch(com)
+    {
+    case 0x000000004004ae25ULL:
+    case 0x0000000040105305ULL:
+    case 0x0000000080048138ULL:
+    case 0x000000008008483eULL:
+    case 0x000000008010480fULL:
+    case 0x000000008018910bULL:
+    case 0x0000000080206216ULL:
+    case 0x0000000080208218ULL:
+    case 0x0000000080283208ULL:
+    case 0x0000000080308217ULL:
+    case 0x00000000c0044512ULL:
+    case 0x00000000c00c5a02ULL:
+    case 0x00000000c0108102ULL:
+    case 0x00000000c02066a5ULL:
+    case 0x00000000c0288907ULL:
+    case 0x00000000c0288908ULL:
+    case 0x00000000c030ab00ULL:
+    case 0x00000000c0484851ULL:
+        return NPDRM_EXPECT_CMD5 | NPDRM_EXPECT_CMD6;
+    default:
+        return 0;
+    }
+}
+
 void handle_ioctl_syscall(uint64_t *regs)
 {
-#if KSTUFF_OBS
     struct ioctl_args uap;
+    uint8_t expected_cmd_mask;
     if(copy_from_kernel(&uap, regs[RSI], sizeof(uap)))
-        s_current_ioctl_com.valid = 0;
-    else
     {
-        s_current_ioctl_com.com = (uint64_t)uap.com;
-        s_current_ioctl_com.valid = 1;
-        observe_ioctl_com_total(s_current_ioctl_com.com);
-    }
+        finish_npdrm_ioctl_state();
+#if KSTUFF_OBS
+        METRIC_INC(ioctl_prefilter_copy_in_fail_open);
 #endif
+        start_syscall_with_dbgregs(regs, dbgregs_for_ioctl);
+        return;
+    }
+
+#if KSTUFF_OBS
+    s_current_ioctl_state.com = (uint64_t)uap.com;
+#endif
+    finish_npdrm_ioctl_state();
+
+    expected_cmd_mask = classify_npdrm_ioctl((uint64_t)uap.com);
+    if(!expected_cmd_mask)
+    {
+#if KSTUFF_OBS
+        METRIC_INC(ioctl_prefilter_skipped);
+#endif
+        observe_current_syscall_finish();
+        return;
+    }
+
+#if KSTUFF_OBS
+    METRIC_INC(ioctl_prefilter_allowed);
+    observe_ioctl_com_total(s_current_ioctl_state.com);
+#endif
+    s_current_ioctl_state.expected_cmd_mask = expected_cmd_mask;
+    s_current_ioctl_state.valid = 1;
     start_syscall_with_dbgregs(regs, dbgregs_for_ioctl);
 }

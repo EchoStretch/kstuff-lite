@@ -2,6 +2,7 @@
 #include <string.h>
 #include "utils.h"
 #include "log.h"
+#include "npdrm.h"
 #include "structs.h"
 #include "traps.h"
 
@@ -458,6 +459,7 @@ void handle_utils_trap(uint64_t* regs, uint32_t trapno)
             return;
         regs[RSP] += sizeof(stack_frame);
         regs[RIP] = stack_frame[11];
+        finish_npdrm_ioctl_state();
         observe_current_syscall_finish();
     }
 }

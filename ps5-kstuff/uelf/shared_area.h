@@ -53,6 +53,9 @@ struct kstuff_metrics
     uint64_t syscall_fpkg_dispatches;
     uint64_t syscall_ioctl_dispatches;
     uint64_t syscall_fix_dispatches;
+    uint64_t ioctl_prefilter_allowed;
+    uint64_t ioctl_prefilter_skipped;
+    uint64_t ioctl_prefilter_copy_in_fail_open;
 
     uint64_t handle_cycles_total;
     uint64_t handle_cycles_max;
@@ -293,11 +296,11 @@ extern struct shared_area_layout shared_area;
 #define METRIC_MAX(field, value) do { (void)(value); } while(0)
 #endif
 
-_Static_assert(sizeof(struct kstuff_metrics) == 1520, "unexpected metrics size");
+_Static_assert(sizeof(struct kstuff_metrics) == 1544, "unexpected metrics size");
 _Static_assert(sizeof(struct kstuff_word_log) == 264, "unexpected word log size");
 _Static_assert(sizeof(struct kstuff_ioctl_com_entry) == 24, "unexpected ioctl com entry size");
 _Static_assert(sizeof(struct kstuff_ioctl_com_table) == 3088, "unexpected ioctl com table size");
 _Static_assert(sizeof(struct kstuff_msg_log) == 504, "unexpected message log size");
-_Static_assert(sizeof(struct kstuff_snapshot) == 5392, "unexpected snapshot size");
-_Static_assert(sizeof(struct shared_area_layout) == 7424, "unexpected shared_area size");
+_Static_assert(sizeof(struct kstuff_snapshot) == 5416, "unexpected snapshot size");
+_Static_assert(sizeof(struct shared_area_layout) == 7448, "unexpected shared_area size");
 _Static_assert(sizeof(struct shared_area_layout) <= SHARED_AREA_SIZE, "shared_area must fit in configured mapping");
