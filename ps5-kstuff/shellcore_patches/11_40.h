@@ -5,8 +5,6 @@ static struct shellcore_patch shellcore_patches_1140_retail[] = {
     {0xC59893, "\xE9\xC1\x01\x00\x00", 5}, // jmp 0xC59A59
     {0xC59A59, "\x52\xE9\x53\x06\x00\x00", 6}, // push rdx; jmp 0xC5A0B2
     {0xC5A0B2, "\xE8\xC9\xEF\xFF\xFF\x58\xC3", 7}, // call 0xC59080; pop rax; ret
-    //{0xC59893, "\x52\xe9\xc0\x01\x00\x00", 6}, // push rdx; jmp 0xC59A59
-    //{0xC59A59, "\xe8\x22\xf8\xff\xff\x58\xc3", 7}, // call 0xC59080; pop rax; ret
     {0xC59066, "\xe9\x06\x00\x00\x00", 5}, // jmp 0xC59071
     {0xC59071, "\x31\xc0\x50\xe8\x07\x00\x00\x00\x58\xc3", 10}, // xor eax, eax; push rax; call 0xC59080; pop rax; ret
     {0x763CF9, "\xeb\x04", 2},
