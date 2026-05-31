@@ -300,11 +300,13 @@ static inline int handle_kernel_trap_fast(uint64_t* regs, uint64_t rip)
     }
     if(is_fself_trap_rip(rip))
     {
-        if(try_handle_fself_trap(regs))
+        int fself_result = try_handle_fself_trap(regs);
+        if(fself_result & FSELF_HANDLE_HANDLED)
         {
             METRIC_INC(fself_traps);
             observe_current_syscall_trap();
-            observe_current_syscall_emulated();
+            if(fself_result & FSELF_HANDLE_EMULATED)
+                observe_current_syscall_emulated();
             return 1;
         }
     }

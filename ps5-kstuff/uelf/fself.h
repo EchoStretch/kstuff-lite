@@ -10,5 +10,13 @@
 
 void handle_fself_syscall(uint64_t* regs);
 void handle_fself_trap(uint64_t* regs, uint32_t trapno);
+
+#define FSELF_HANDLE_HANDLED 1
+#if KSTUFF_OBS
+#define FSELF_HANDLE_EMULATED 2
+#else
+#define FSELF_HANDLE_EMULATED 0
+#endif
+
 int try_handle_fself_trap(uint64_t* regs);
 int try_handle_fself_mailbox(uint64_t* regs, uint64_t lr);

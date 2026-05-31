@@ -324,6 +324,7 @@ void handle_fself_trap(uint64_t* regs, uint32_t trapno)
 int try_handle_fself_mailbox(uint64_t* regs, uint64_t lr)
 {
     METRIC_TIME_START(start_cycles);
+    int emulated = 0;
 #define RETURN_FSELF_MAILBOX(value) do { METRIC_TIME(fself_mailbox_cycles_total, fself_mailbox_cycles_max, start_cycles); return (value); } while(0)
     /*
      * Telemetry shows the mailbox hot order is decryptSelfBlock, decryptMultipleSelfBlocks,
@@ -353,6 +354,7 @@ int try_handle_fself_mailbox(uint64_t* regs, uint64_t lr)
             memcpy(DMEM+request[1], DMEM+request[2], (uint32_t)request[6]);
             regs[RAX] = 0;
             METRIC_INC(fself_mailbox_decrypt_self_block_emulated);
+            emulated = 1;
         }
     }
     else if(lr == (uint64_t)sceSblServiceMailbox_lr_decryptMultipleSelfBlocks)
@@ -383,6 +385,7 @@ int try_handle_fself_mailbox(uint64_t* regs, uint64_t lr)
             copy_decrypted_self_blocks(DMEM, src, dst, request[5]);
             regs[RAX] = 0;
             METRIC_INC(fself_mailbox_decrypt_multiple_self_blocks_emulated);
+            emulated = 1;
         }
     }
     else if(lr == (uint64_t)sceSblServiceMailbox_lr_verifyHeader)
@@ -397,14 +400,14 @@ int try_handle_fself_mailbox(uint64_t* regs, uint64_t lr)
         if(kpeek64_checked(self_context + 56, &self_header))
             RETURN_FSELF_MAILBOX(0);
         if(!is_header_fself(self_header, size, 0, 0, 0, 0))
-            RETURN_FSELF_MAILBOX(1);
+            RETURN_FSELF_MAILBOX(FSELF_HANDLE_HANDLED);
         if(copy_from_kernel(ctx_data, self_context, sizeof(ctx_data)))
             RETURN_FSELF_MAILBOX(0);
         if(ctx_data[7] != self_header)
         {
             self_header = ctx_data[7];
             if(!is_header_fself(self_header, size, 0, 0, 0, 0))
-                RETURN_FSELF_MAILBOX(1);
+                RETURN_FSELF_MAILBOX(FSELF_HANDLE_HANDLED);
         }
         remember_context_fself_info(self_context, self_header, size, ctx_data);
         char fself_header_backup[(48 + mini_syscore_header_size + 15) & -16];
@@ -434,6 +437,7 @@ int try_handle_fself_mailbox(uint64_t* regs, uint64_t lr)
             RETURN_FSELF_MAILBOX(0);
         }
         METRIC_INC(fself_mailbox_verify_header_emulated);
+        emulated = 1;
     }
     else if(lr == (uint64_t)sceSblServiceMailbox_lr_loadSelfSegment)
     {
@@ -459,18 +463,20 @@ int try_handle_fself_mailbox(uint64_t* regs, uint64_t lr)
                 RETURN_FSELF_MAILBOX(0);
             regs[RAX] = 0;
             METRIC_INC(fself_mailbox_load_self_segment_emulated);
+            emulated = 1;
         }
     }
     else
         RETURN_FSELF_MAILBOX(0);
 
-    RETURN_FSELF_MAILBOX(1);
+    RETURN_FSELF_MAILBOX(FSELF_HANDLE_HANDLED | (emulated ? FSELF_HANDLE_EMULATED : 0));
 #undef RETURN_FSELF_MAILBOX
 }
 
 int try_handle_fself_trap(uint64_t* regs)
 {
     METRIC_TIME_START(start_cycles);
+    int emulated = 0;
 #define RETURN_FSELF_TRAP(value) do { METRIC_TIME(fself_trap_cycles_total, fself_trap_cycles_max, start_cycles); return (value); } while(0)
     /*
      * The hot trap order is watchpoint, epilogue, then SmIsLoadable2.
@@ -481,24 +487,31 @@ int try_handle_fself_trap(uint64_t* regs)
         METRIC_INC(fself_trap_watchpoint);
         uint64_t frame[4];
         if(copy_from_kernel(frame, regs[RSP], sizeof(frame)))
-            RETURN_FSELF_TRAP(1);
+            RETURN_FSELF_TRAP(FSELF_HANDLE_HANDLED);
         regs[(FWVER >= 0x800) ? RAX : R10] |= 0xffffull << 48;
         if(frame[3] == (uint64_t)loadSelfSegment_watchpoint_lr)
         {
-            if(!set_dbgregs_for_watchpoint(regs, dbgregs_for_loadSelfSegment, sizeof(frame)))
-                RETURN_FSELF_TRAP(1);
+            if(set_dbgregs_for_watchpoint(regs, dbgregs_for_loadSelfSegment, sizeof(frame)))
+                emulated = 1;
+            else
+                RETURN_FSELF_TRAP(FSELF_HANDLE_HANDLED);
         }
         else if(frame[3] == (uint64_t)decryptSelfBlock_watchpoint_lr)
         {
-            if(!set_dbgregs_for_watchpoint(regs, dbgregs_for_decryptSelfBlock, sizeof(frame)))
-                RETURN_FSELF_TRAP(1);
+            if(set_dbgregs_for_watchpoint(regs, dbgregs_for_decryptSelfBlock, sizeof(frame)))
+                emulated = 1;
+            else
+                RETURN_FSELF_TRAP(FSELF_HANDLE_HANDLED);
         }
         else if(frame[3] == (uint64_t)decryptMultipleSelfBlocks_watchpoint_lr)
         {
-            if(!set_dbgregs_for_watchpoint(regs, dbgregs_for_decryptMultipleSelfBlocks, sizeof(frame)))
-                RETURN_FSELF_TRAP(1);
+            if(set_dbgregs_for_watchpoint(regs, dbgregs_for_decryptMultipleSelfBlocks, sizeof(frame)))
+                emulated = 1;
+            else
+                RETURN_FSELF_TRAP(FSELF_HANDLE_HANDLED);
         }
-        METRIC_INC(fself_trap_watchpoint_emulated);
+        if(emulated)
+            METRIC_INC(fself_trap_watchpoint_emulated);
     }
     else if(regs[RIP] == (uint64_t)loadSelfSegment_epilogue
          || regs[RIP] == (uint64_t)decryptSelfBlock_epilogue
@@ -506,8 +519,9 @@ int try_handle_fself_trap(uint64_t* regs)
     {
          METRIC_INC(fself_trap_epilogue);
          if(!unset_dbgregs_for_watchpoint(regs))
-             RETURN_FSELF_TRAP(1);
+             RETURN_FSELF_TRAP(FSELF_HANDLE_HANDLED);
          METRIC_INC(fself_trap_epilogue_emulated);
+         emulated = 1;
     }
     else if(regs[RIP] == (uint64_t)sceSblAuthMgrSmIsLoadable2)
     {
@@ -537,20 +551,21 @@ int try_handle_fself_trap(uint64_t* regs)
                     p_authinfo = s_auth_info_for_exec;
             }
             if(copy_u64_from_kernel(&ret_addr, regs[RSP]))
-                RETURN_FSELF_TRAP(1);
+                RETURN_FSELF_TRAP(FSELF_HANDLE_HANDLED);
             if(copy_to_kernel(regs[R8], p_authinfo, 0x88))
-                RETURN_FSELF_TRAP(1);
+                RETURN_FSELF_TRAP(FSELF_HANDLE_HANDLED);
             if(copy_u16_to_kernel(regs[RDI] + 62, 0xdeb7))
-                RETURN_FSELF_TRAP(1);
+                RETURN_FSELF_TRAP(FSELF_HANDLE_HANDLED);
             regs[RSP] += 8;
             regs[RIP] = ret_addr;
             regs[RAX] = 0;
             METRIC_INC(fself_trap_is_loadable2_emulated);
+            emulated = 1;
         }
     }
     else
         RETURN_FSELF_TRAP(0);
-    RETURN_FSELF_TRAP(1);
+    RETURN_FSELF_TRAP(FSELF_HANDLE_HANDLED | (emulated ? FSELF_HANDLE_EMULATED : 0));
 #undef RETURN_FSELF_TRAP
 }
 

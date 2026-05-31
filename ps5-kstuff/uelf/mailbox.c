@@ -14,11 +14,13 @@ int try_handle_mailbox_trap(uint64_t* regs)
     {
         METRIC_INC(mailbox_traps);
         uint64_t lr = kpeek64(regs[RSP]);
-        if(try_handle_fself_mailbox(regs, lr))
+        int fself_result = try_handle_fself_mailbox(regs, lr);
+        if(fself_result & FSELF_HANDLE_HANDLED)
         {
             METRIC_INC(mailbox_fself);
             observe_current_syscall_trap();
-            observe_current_syscall_emulated();
+            if(fself_result & FSELF_HANDLE_EMULATED)
+                observe_current_syscall_emulated();
             return 1;
         }
         if(try_handle_fpkg_mailbox(regs, lr))
