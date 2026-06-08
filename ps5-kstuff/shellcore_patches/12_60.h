@@ -21,7 +21,10 @@ static struct shellcore_patch shellcore_patches_1260_retail[] = {
 
     {0x174A680, "\x31\xc0\xc3", 3}, // VR
     {0x174EBE0, "\x31\xC0\xC3", 3}, // VR2 Update bypass
+    {0x6569fa, "\x66\x90", 2}, // force getSceSysDirPath to take isDebuggerOrAppHomeLaunchedApp=1 path, by ArkSama
+    {0xb21d1a, "\xEB", 1}, // fix trophies not unlocking in certain games
     {0xAFF2E3, "\xeb\x03", 2}, // disable game error message
+
     {0x3295D0, "\x90\xe9", 2}, // PS4 Disc Installer Patch 1
     {0x32964A, "\x90\xe9", 2}, // PS5 Disc Installer Patch 1
     {0x32974C, "\xeb", 1}, // PS4 PKG Installer Patch 1

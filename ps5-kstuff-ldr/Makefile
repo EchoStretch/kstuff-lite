@@ -26,25 +26,32 @@ else
 endif
 
 CFLAGS += -Wall -Werror
-LDFLAGS += -lz -lSceSystemService -lSceUserService -lSceAppInstUtil -lSceFsInternalForVsh -lsqlite3
+CPPFLAGS += -Iinclude
 
-# Automatically grab all .c files in current directory
-SRC := $(wildcard *.c)
+LDFLAGS += -lz \
+           -lSceSystemService \
+           -lSceUserService \
+           -lSceAppInstUtil \
+           -lSceFsInternalForVsh \
+           -lsqlite3
+
+# Automatically grab all .c files in src/
+SRC := $(filter-out src/payload_bin.c,$(shell find src -name '*.c'))
 
 all: kstuff.elf
 
 ../ps5-kstuff/payload.bin:
 	$(MAKE) -C ../ps5-kstuff/
 
-payload_bin.c: ../ps5-kstuff/payload.bin
-	xxd -i $^ > $@
+src/payload_bin.c: ../ps5-kstuff/payload.bin
+	xxd -i $< > $@
 
-kstuff.elf: payload_bin.c $(SRC)
+kstuff.elf: src/payload_bin.c $(SRC)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LOADER_OPT) $(SRC) -o $@ $(LDFLAGS)
 	strip $@
 
 clean:
-	rm -f payload_bin.c *.o *.elf
+	rm -f src/payload_bin.c *.o *.elf
 
 test: kstuff.elf
 	$(PS5_DEPLOY) -h $(PS5_HOST) -p $(PS5_PORT) $^

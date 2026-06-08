@@ -13,14 +13,18 @@ static struct shellcore_patch shellcore_patches_1060_retail[] = {
     {0x70C775, "\x90\xe9", 2},
     {0x724283, "\xeb", 1},
     {0x72621F, "\x61\x01\x00\x00", 4}, // 0x726384
-    {0x206CD1, "\xe8\x8a\x81\x60\x00\x31\xc9\xff\xc1\xe9\xd4\x01\x00\x00", 14}, // call 0x80F660; xor ecx; inc ecx; jmp 0x206EB3
+    {0x206CD1, "\xe8\x8a\x89\x60\x00\x31\xc9\xff\xc1\xe9\xd4\x01\x00\x00", 14}, // call 0x80F660; xor ecx; inc ecx; jmp 0x206EB3
     {0x206EB3, "\x83\xf8\x02\x0f\x43\xc1\xe9\x82\xf4\xff\xff", 11}, // cmp eax, 2; cmovae eax, ecx; jmp 0x206340
     {0x206843, "\xe9\x89\x04\x00\x00", 5}, // jmp 0x206CD1
 
     {0x747880, "\xC3", 1}, // callback to sceRifManagerRegisterActivationCallback
 
-    {0x16A74E0, "\x31\xc0\xc3", 3}, // VR2 Min Fw Check
+    {0x16A74E0, "\x31\xc0\xc3", 3}, // VR
+    {0x16AB8F0, "\x31\xC0\xC3", 3}, // VR2 Update bypass
+    {0x5d9cf1, "\x66\x90", 2}, // force getSceSysDirPath to take isDebuggerOrAppHomeLaunchedApp=1 path, by ArkSama
+    {0xaaf831, "\xEB", 1}, // fix trophies not unlocking in certain games
     {0xA8C8E3, "\xeb\x03", 2}, // disable game error message
+
     {0x307150, "\x90\xe9", 2}, // PS4 Disc Installer Patch 1
     {0x3071CA, "\x90\xe9", 2}, // PS5 Disc Installer Patch 1
     {0x3072CC, "\xeb", 1}, // PS4 PKG Installer Patch 1

@@ -73,6 +73,7 @@ typedef enum {
     IMAGE_TYPE_UNKNOWN = 0,
     IMAGE_TYPE_FOLDER,
     IMAGE_TYPE_PFS,
+    IMAGE_TYPE_PFSC,
     IMAGE_TYPE_UFS,
     IMAGE_TYPE_EXFAT
 } image_type_t;

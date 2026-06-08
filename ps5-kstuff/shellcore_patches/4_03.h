@@ -16,8 +16,12 @@ static struct shellcore_patch shellcore_patches_403_retail[] = {
     {0x1a12d1, "\xe8\xea\x88\x47\x00\x31\xc9\xff\xc1\xe9\xf4\x02\x00\x00", 14}, //call 0x619bc0; xor ecx, ecx; inc ecx; jmp 0x1a15d3
     {0x1a15d3, "\x83\xf8\x02\x0f\x43\xc1\xe9\x29\xfa\xff\xff", 11}, //cmp eax, 2; cmovae eax, ecx; jmp 0x1a1007
     {0x1a0fe5, "\xe9\xe7\x02\x00\x00", 5}, //jmp 0x1a12d1
+
     {0x12B5EB0, "\x31\xC0\xC3", 3}, //VR2 Min Fw Check
+    {0x43db4c, "\x66\x0F\x1F\x44\x00\x00", 6}, // force getSceSysDirPath to take isDebuggerOrAppHomeLaunchedApp=1 path, by ArkSama
+    {0x8337a7, "\xEB", 1}, // fix trophies not unlocking in certain games
     {0x81CA56, "\x90\x90\x90\x90\x90", 5}, //disable game error message
+
     {0x267DBB, "\x90\xE9", 2}, //PS4 Disc Installer Patch 1
     {0x267E52, "\x90\xE9", 2}, //PS5 Disc Installer Patch 1
     {0x267F6B, "\xEB", 1}, //PS4 PKG Installer Patch 1
@@ -32,7 +36,10 @@ static struct shellcore_patch shellcore_patches_403_retail[] = {
 };
 
 static struct shellcore_patch shellcore_patches_403_testkit[] = {
+    {0x446a5c, "\x66\x0F\x1F\x44\x00\x00", 6}, // force getSceSysDirPath to take isDebuggerOrAppHomeLaunchedApp=1 path, by ArkSama
+    {0x83eb77, "\xEB", 1}, // fix trophies not unlocking in certain games
     {0x827E26, "\x90\x90\x90\x90\x90", 5}, //disable game error message
+
     {0x271DAB, "\x90\xE9", 2}, //PS4 Disc Installer Patch 1
     {0x271E42, "\x90\xE9", 2}, //PS5 Disc Installer Patch 1
     {0x271F5B, "\xEB", 1}, //PS4 PKG Installer Patch 1
@@ -47,7 +54,10 @@ static struct shellcore_patch shellcore_patches_403_testkit[] = {
 };
 
 static struct shellcore_patch shellcore_patches_403_devkit[] = {
+    {0x446c3c, "\x66\x0F\x1F\x44\x00\x00", 6}, // force getSceSysDirPath to take isDebuggerOrAppHomeLaunchedApp=1 path, by ArkSama
+    {0x83ece7, "\xEB", 1}, // fix trophies not unlocking in certain games
     {0x827F96, "\x90\x90\x90\x90\x90", 5}, //disable game error message
+
     {0x27231B, "\x90\xE9", 2}, //PS4 Disc Installer Patch 1
     {0x2723B2, "\x90\xE9", 2}, //PS5 Disc Installer Patch 1
     {0x2724CB, "\xEB", 1}, //PS4 PKG Installer Patch 1

@@ -21,11 +21,11 @@ bool mount_exfat_image(const char *file_path, char *out_mount_point) {
         return false;
     }
 
-    time_t now = time(NULL);
+    /*time_t now = time(NULL);
     if (difftime(now, st.st_mtime) < 12.0) {
         notify("Image too new (%.0fs) - skipping", difftime(now, st.st_mtime));
         return false;
-    }
+    }*/
 
     const char* filename = strrchr(file_path, '/') ? strrchr(file_path, '/') + 1 : file_path;
     char mount_name[256];

@@ -16,8 +16,13 @@ static struct shellcore_patch shellcore_patches_701_retail[] = {
     {0x1e1bb1, "\xe8\xca\xc5\x59\x00\x31\xc9\xff\xc1\xe9\x24\x02\x00\x00", 14},
     {0x1e1de3, "\x83\xf8\x02\x0f\x43\xc1\xe9\x55\xfb\xff\xff", 11},
     {0x1e184e, "\xe9\x5e\x03\x00\x00", 5},
-    {0x15771F0, "\x31\xC0\xC3", 3}, //VR2 Min Fw Check
+
+    {0x15771F0, "\x31\xC0\xC3", 3}, //VR
+    {0x157B620, "\x31\xC0\xC3", 3}, // VR2 Update bypass
+    {0x579656, "\x66\x90", 2}, // force getSceSysDirPath to take isDebuggerOrAppHomeLaunchedApp=1 path, by ArkSama
+    {0x9e7e96, "\xEB", 1}, // fix trophies not unlocking in certain games
     {0x9CAD26, "\x90\x90\x90\x90\x90", 5}, //disable game error message
+
     {0x2d59cb, "\x90\xE9", 2}, //PS4 Disc Installer Patch 1
     {0x2d5a49, "\x90\xE9", 2}, //PS5 Disc Installer Patch 1
     {0x2d5b4b, "\xEB", 1}, //PS4 PKG Installer Patch 1
@@ -32,7 +37,12 @@ static struct shellcore_patch shellcore_patches_701_retail[] = {
 };
 
 static struct shellcore_patch shellcore_patches_701_testkit[] = {
+    {0x1587960, "\x31\xC0\xC3", 3}, //VR
+    {0x158BD80, "\x31\xC0\xC3", 3}, // VR2 Update bypass
+    {0x5852e6, "\x66\x90", 2}, // force getSceSysDirPath to take isDebuggerOrAppHomeLaunchedApp=1 path, by ArkSama
+    {0x9f6f16, "\xEB", 1}, // fix trophies not unlocking in certain games
     {0x9D9DA6, "\x90\x90\x90\x90\x90", 5}, //disable game error message
+
     {0x2DE6DB, "\x90\xE9", 2}, //PS4 Disc Installer Patch 1
     {0x2DE759, "\x90\xE9", 2}, //PS5 Disc Installer Patch 1
     {0x2DE85B, "\xEB", 1}, //PS4 PKG Installer Patch 1

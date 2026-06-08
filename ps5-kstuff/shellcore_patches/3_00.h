@@ -16,8 +16,11 @@ static struct shellcore_patch shellcore_patches_300_retail[] = {
     {0x1968c1, "\xe8\x4a\xde\x42\x00\x31\xc9\xff\xc1\xe9\x12\x01\x00\x00", 14},
     {0x1969e1, "\x83\xf8\x02\x0f\x43\xc1\xe9\xff\xfb\xff\xff", 11},
     {0x1965c9, "\xe9\xf3\x02\x00\x00", 5},
-    {0x131FA10, "\x31\xC0\xC3", 3}, //VR2 Min Fw Check
+
+    {0x3fc24c, "\x66\x0F\x1F\x44\x00\x00", 6}, // force getSceSysDirPath to take isDebuggerOrAppHomeLaunchedApp=1 path, by ArkSama
+    {0x8b5634, "\xEB", 1}, // fix trophies not unlocking in certain games
     {0x899166, "\x90\x90\x90\x90\x90", 5}, //disable game error message
+
     {0x25284B, "\x90\xE9", 2}, //PS4 Disc Installer Patch 1
     {0x2528C8, "\x90\xE9", 2}, //PS5 Disc Installer Patch 1
     {0x2529CB, "\xEB", 1}, //PS4 PKG Installer Patch 1
@@ -32,7 +35,10 @@ static struct shellcore_patch shellcore_patches_300_retail[] = {
 };
 
 static struct shellcore_patch shellcore_patches_300_testkit[] = {
+    {0x40377c, "\x66\x0F\x1F\x44\x00\x00", 6}, // force getSceSysDirPath to take isDebuggerOrAppHomeLaunchedApp=1 path, by ArkSama
+    {0x8bf934, "\xEB", 1}, // fix trophies not unlocking in certain games
     {0x8A3466, "\x90\x90\x90\x90\x90", 5}, //disable game error message
+
     {0x25C3EB, "\x90\xE9", 2}, //PS4 Disc Installer Patch 1
     {0x25C468, "\x90\xE9", 2}, //PS5 Disc Installer Patch 1
     {0x25C56B, "\xEB", 1}, //PS4 PKG Installer Patch 1

@@ -12,7 +12,7 @@ GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
 along with this program; see the file COPYING. If not, see
-<http://www.gnu.org/licenses/>.  */		   
+<http://www.gnu.org/licenses/>.  */           
 
 #include <elf.h>
 #include <stdio.h>
@@ -23,6 +23,8 @@ along with this program; see the file COPYING. If not, see
 #include <fcntl.h>
 #include <dirent.h>
 #include <signal.h>
+#include <limits.h>
+#include <stdbool.h>
 
 #include <sys/mman.h>
 #include <sys/_iovec.h>
@@ -41,8 +43,10 @@ along with this program; see the file COPYING. If not, see
 #include "image.h"
 #include "ufs_mount.h"
 #include "pfs_mount.h"
+#include "pfsc_mount.h"
 #include "exfat_mount.h"
 #include "mount_helpers.h"
+#include "shellui_patch.h"
 #include "utils.h"
 
 int patch_app_db(void);
@@ -51,35 +55,91 @@ int sceKernelSetProcessName(const char *name);
 #define ROUND_PG(x) (((x) + (PAGE_SIZE - 1)) & ~(PAGE_SIZE - 1))
 #define TRUNC_PG(x) ((x) & ~(PAGE_SIZE - 1))
 #define PFLAGS(x)   ((((x) & PF_R) ? PROT_READ  : 0) | \
-             (((x) & PF_W) ? PROT_WRITE : 0) | \
-             (((x) & PF_X) ? PROT_EXEC  : 0))
+                     (((x) & PF_W) ? PROT_WRITE : 0) | \
+                     (((x) & PF_X) ? PROT_EXEC  : 0))
 
 #define IOVEC_ENTRY(x) { (void*)(x), (x) ? strlen(x) + 1 : 0 }
 #define IOVEC_SIZE(x)  (sizeof(x) / sizeof(struct iovec))
 
+// Global flag to prevent our own mounting actions from causing an infinite loop
+static bool g_is_mounting = false;
+
 static int mount_source(const char* src_path, char* out_mounted_path)
 {
     char image_path[MAX_PATH] = {0};
-    bool is_ufs = false, is_pfs = false, is_exfat = false;
+    bool is_ufs = false, is_pfs = false, is_pfsc = false, is_exfat = false;
 
     if (find_image_in_dir(src_path, image_path, sizeof(image_path), 
-                         &is_ufs, &is_pfs, &is_exfat)) {
+                          &is_ufs, &is_pfs, &is_pfsc, &is_exfat)) {
         
         klog_printf("Image detected in folder: %s\n", image_path);
 
-        if (is_ufs && mount_ufs_image(image_path, out_mounted_path)) {
+        char mount_point[MAX_PATH] = {0};
+        char nullfs_src[MAX_PATH] = {0};
+
+        if (is_ufs && mount_ufs_image(image_path, mount_point)) {
             klog_printf("UFS image mounted\n");
-            return 0;
+            strncpy(nullfs_src, mount_point, sizeof(nullfs_src)-1);
         }
-        else if (is_pfs && mount_pfs_image(image_path, out_mounted_path)) {
+        else if (is_pfs && mount_pfs_image(image_path, mount_point)) {
             klog_printf("PFS image mounted\n");
-            return 0;
+            strncpy(nullfs_src, mount_point, sizeof(nullfs_src)-1);
         }
-        else if (is_exfat && mount_exfat_image(image_path, out_mounted_path)) {
+        else if (is_pfsc) {
+            klog_printf("PFSC image detected: %s\n", strrchr(image_path, '/') ? 
+                       strrchr(image_path, '/') + 1 : image_path);
+
+            char pfsc_mount_point[MAX_PATH] = {0};
+            if (mount_pfsc_image(image_path, pfsc_mount_point)) {
+                strncpy(nullfs_src, pfsc_mount_point, sizeof(nullfs_src)-1);
+                strncpy(mount_point, pfsc_mount_point, sizeof(mount_point)-1);
+
+                // === NESTED IMAGE SUPPORT ===
+                char nested_image[MAX_PATH] = {0};
+                bool n_ufs = false, n_pfs = false, n_pfsc = false, n_exfat = false;
+
+                klog_printf("Scanning for nested image inside PFSC...\n");
+                if (find_image_in_dir(pfsc_mount_point, nested_image, sizeof(nested_image),
+                                    &n_ufs, &n_pfs, &n_pfsc, &n_exfat)) {
+
+                    char nested_mount[MAX_PATH] = {0};
+                    bool nested_ok = false;
+
+                    if (n_ufs) {
+                        klog_printf("Nested UFS detected\n");
+                        nested_ok = mount_ufs_image(nested_image, nested_mount);
+                    } else if (n_pfs) {
+                        klog_printf("Nested PFS detected\n");
+                        nested_ok = mount_pfs_image(nested_image, nested_mount);
+                    } else if (n_exfat) {
+                        klog_printf("Nested exFAT detected\n");
+                        nested_ok = mount_exfat_image(nested_image, nested_mount);
+                    }
+
+                    if (nested_ok && strlen(nested_mount) > 0) {
+                        klog_printf("Successfully mounted nested image\n");
+                        strncpy(nullfs_src, nested_mount, sizeof(nullfs_src)-1);
+                        strncpy(mount_point, nested_mount, sizeof(mount_point)-1);
+                    } else {
+                        klog_printf("Nested mount failed - falling back to PFSC root\n");
+                    }
+                }
+                // === END NESTED SUPPORT ===
+            } else {
+                klog_printf("PFSC mount failed\n");
+            }
+        }
+        else if (is_exfat && mount_exfat_image(image_path, mount_point)) {
             klog_printf("exFAT image mounted\n");
+            strncpy(nullfs_src, mount_point, sizeof(nullfs_src)-1);
+        }
+
+        if (strlen(nullfs_src) > 0) {
+            strncpy(out_mounted_path, nullfs_src, PATH_MAX - 1);
+            out_mounted_path[PATH_MAX - 1] = '\0';
             return 0;
         }
-        
+
         klog_printf("Image mount failed, falling back to folder mode\n");
     }
 
@@ -97,7 +157,7 @@ static int bind_mount_title(const char* title_id, const char* src)
 
     snprintf(dst, sizeof(dst), "/system_ex/app/%s/sce_sys", title_id);
     if (stat(dst, &st) == 0) {
-        klog_printf("Title already mounted: %s\n", title_id);
+        // Already mounted properly, skip to avoid loop interactions
         return 0;
     }
 
@@ -111,7 +171,6 @@ static int bind_mount_title(const char* title_id, const char* src)
         return -1;
     }
 
-    // NEW: Try to mount image if present, otherwise use folder
     if (mount_source(src, mounted_src) != 0) {
         klog_printf("Failed to prepare source, using original path\n");
         strncpy(mounted_src, src, sizeof(mounted_src)-1);
@@ -119,6 +178,9 @@ static int bind_mount_title(const char* title_id, const char* src)
 
     if (mount_nullfs(mounted_src, dst) != 0) {
         klog_perror("Failed to bind mount title with mount_nullfs");
+        // Cleanup block loop mappings if nullfs fails
+        unmount_pfsc(mounted_src);
+        unmount_pfs(mounted_src);
         return -1;
     }
 
@@ -133,7 +195,6 @@ static int automount_disabled(void) {
 static int read_mount_link(const char* path, char* buf, size_t size) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
-        klog_perror("Failed to open mount.lnk file");
         return -1;
     }
 
@@ -172,16 +233,11 @@ static int bind_mount_all_titles(const char* path) {
         }
 
         if (read_mount_link(mountlnk, mountlnk, sizeof(mountlnk)) != 0) {
-            klog_printf("Failed to read mount.lnk for title %s\n", entry->d_name);
             continue;
         }
 
-        if (bind_mount_title(entry->d_name, mountlnk) != 0) {
-            klog_printf("Failed to bind mount title %s -> %s\n", entry->d_name, mountlnk);
-            continue;
-        }
-
-        klog_printf("Successfully mounted title %s -> %s\n", entry->d_name, mountlnk);
+        // Run the mount step safely
+        bind_mount_title(entry->d_name, mountlnk);
     }
 
     closedir(dir);
@@ -193,10 +249,13 @@ static int scan_and_mount_titles(void) {
         return 0;
     }
 
+    g_is_mounting = true;
     if (bind_mount_all_titles("/user/app") < 0) {
         klog_perror("Failed to bind mount /user/app titles");
+        g_is_mounting = false;
         return -1;
     }
+    g_is_mounting = false;
 
     return 0;
 }
@@ -223,6 +282,14 @@ static int monitor_usb_changes(void) {
             break;
         }
 
+        // If this event was triggered by our own scanning modifications, skip it
+        if (g_is_mounting) {
+            continue;
+        }
+
+        // Add a minor settling delay for USB descriptor stabilization
+        sleep(1);
+
         if (scan_and_mount_titles() < 0) {
             klog_perror("Failed to scan and bind mount titles after USB change");
         }
@@ -239,7 +306,6 @@ pt_load(const void* image, void* base, Elf64_Phdr *phdr) {
   }
 }
 
-
 int main(void) {
     sceKernelSetProcessName("kstuff.elf");
     Elf64_Ehdr *ehdr = (Elf64_Ehdr*)___ps5_kstuff_payload_bin;
@@ -249,12 +315,10 @@ int main(void) {
     uintptr_t max_vaddr = 0;
     size_t base_size;
 
-    // Compute size of virtual memory region.
     for(int i=0; i<ehdr->e_phnum; i++) {
         if(phdr[i].p_vaddr < min_vaddr) {
             min_vaddr = phdr[i].p_vaddr;
         }
-
         if(max_vaddr < phdr[i].p_vaddr + phdr[i].p_memsz) {
             max_vaddr = phdr[i].p_vaddr + phdr[i].p_memsz;
         }
@@ -263,14 +327,12 @@ int main(void) {
     max_vaddr = ROUND_PG(max_vaddr);
     base_size = max_vaddr - min_vaddr;
 
-    // allocate memory.
     if((base=mmap(base, base_size, PROT_READ | PROT_WRITE,
                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) {
         perror("mmap");
         return EXIT_FAILURE;
     }
 
-    // Parse program headers.
     for(int i=0; i<ehdr->e_phnum; i++) {
         switch(phdr[i].p_type) {
         case PT_LOAD:
@@ -279,7 +341,6 @@ int main(void) {
         }
     }
 
-    // Set protection bits on mapped segments.
     for(int i=0; i<ehdr->e_phnum; i++) {
         if(phdr[i].p_type != PT_LOAD || phdr[i].p_memsz == 0) {
             continue;
@@ -299,7 +360,8 @@ int main(void) {
         puts("patching app.db");
         *args->payloadout = patch_app_db();
     }
-
+    start_shellui_patch_thread();
+    
     klog_printf("Remounting /system_ex and mounting titles with image support...\n");
     remount_system_ex();
     scan_and_mount_titles();

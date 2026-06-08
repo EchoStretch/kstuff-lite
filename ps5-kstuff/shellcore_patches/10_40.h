@@ -19,8 +19,12 @@ static struct shellcore_patch shellcore_patches_1040_retail[] = {
 
     {0x745FF0, "\xC3", 1}, // callback to sceRifManagerRegisterActivationCallback
 
-    {0x16A5C60, "\x31\xc0\xc3", 3}, // VR2 Min Fw Check
+    {0x16A5C60, "\x31\xc0\xc3", 3}, // VR
+    {0x16AA070, "\x31\xC0\xC3", 3}, // VR2 Update bypass
+    {0x5d8461, "\x66\x90", 2}, // force getSceSysDirPath to take isDebuggerOrAppHomeLaunchedApp=1 path, by ArkSama
+    {0xaadfa1, "\xEB", 1}, // fix trophies not unlocking in certain games
     {0xA8B053, "\xeb\x03", 2}, // disable game error message
+
     {0x3057F0, "\x90\xe9", 2}, // PS4 Disc Installer Patch 1
     {0x30586A, "\x90\xe9", 2}, // PS5 Disc Installer Patch 1
     {0x30596C, "\xeb", 1}, // PS4 PKG Installer Patch 1
