@@ -1134,7 +1134,7 @@ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
                                "Retail";
 
     char msg[128];
-    snprintf(msg, sizeof(msg), "Welcome To Kstuff Lite 1.08\nPlayStation 5 FW: %x.%02x (%s)\nBy sleirsgoevy", 
+    snprintf(msg, sizeof(msg), "Welcome To Kstuff Lite 1.09\nPlayStation 5 FW: %x.%02x (%s)\nBy sleirsgoevy", 
              fwver >> 8, fwver & 0xFF, console_type);
     notify(msg);
 	
