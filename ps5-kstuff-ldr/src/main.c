@@ -71,6 +71,10 @@ int sceKernelSetProcessName(const char *name);
 // Global flag to prevent our own mounting actions from causing an infinite loop
 static bool g_is_mounting = false;
 
+static int automount_disabled(void) {
+    return access("/data/.kstuff_noautomount", F_OK) == 0;
+}
+
 static int mount_source(const char* src_path, char* out_mounted_path)
 {
     char image_path[MAX_PATH] = {0};
@@ -162,6 +166,10 @@ static int bind_mount_title(const char* title_id, const char* src)
     char mounted_src[PATH_MAX] = {0};
     struct stat st;
 
+    if (automount_disabled()) {
+        return 0;
+    }
+	
     snprintf(dst, sizeof(dst), "/system_ex/app/%s/sce_sys", title_id);
     if (stat(dst, &st) == 0) {
         // Already mounted properly, skip to avoid loop interactions
@@ -193,10 +201,6 @@ static int bind_mount_title(const char* title_id, const char* src)
 
     klog_printf("Title Mounted Successfully: %s -> %s\n", mounted_src, dst);
     return 0;
-}
-
-static int automount_disabled(void) {
-    return access("/data/.kstuff_noautomount", F_OK) == 0;
 }
 
 static int read_mount_link(const char* path, char* buf, size_t size) {
@@ -252,9 +256,6 @@ static int bind_mount_all_titles(const char* path) {
 }
 
 static int scan_and_mount_titles(void) {
-    if (automount_disabled()) {
-        return 0;
-    }
 
     g_is_mounting = true;
     if (bind_mount_all_titles("/user/app") < 0) {
@@ -377,9 +378,13 @@ int main(void) {
     }
     start_shellui_patch_thread();
     
-    klog_printf("Remounting /system_ex and mounting titles with image support...\n");
-    remount_system_ex();
-    scan_and_mount_titles();
+    if (automount_disabled()) {
+        klog_printf("Automount disabled by /data/.kstuff_noautomount\n");
+    } else {
+        klog_printf("Remounting /system_ex and mounting titles with image support...\n");
+        remount_system_ex();
+        scan_and_mount_titles();
+    }
 
     monitor_usb_changes();
 
