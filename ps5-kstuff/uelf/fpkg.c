@@ -10,8 +10,11 @@
 
 extern char sceSblServiceMailbox[];
 extern char sceSblServiceMailbox_lr_verifySuperBlock[];
+extern char sceSblServiceMailbox_lr_verifyImage[];
 extern char sceSblServiceMailbox_lr_sceSblPfsClearKey_1[];
 extern char sceSblServiceMailbox_lr_sceSblPfsClearKey_2[];
+extern char sceSblServiceRequest_lr_registerMountKey_1[];
+extern char sceSblServiceRequest_lr_registerMountKey_2[];
 extern char sceSblServiceCryptAsync_deref_singleton[];
 extern char crypt_message_resolve[];
 extern char doreti_iret[];
@@ -342,6 +345,32 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
             }
         }
     }
+	else if(lr == (uint64_t)sceSblServiceMailbox_lr_verifyImage)
+	{
+		//just a start, not really sure how this goes yet
+		METRIC_INC(verify_image_mailbox);
+
+		uint64_t req[8] = {0};
+
+		if(copy_from_kernel(req, regs[RDX], sizeof(req)))
+			return 0;
+
+		uint64_t resp[8] = {0};
+
+		resp[0] = 0;   // success
+
+		if(copy_to_kernel(regs[RDX], resp, sizeof(resp)))
+			return 0;
+
+		regs[RIP] = lr;
+		regs[RAX] = 0;
+		regs[RSP] += 8;
+
+		METRIC_INC(verify_image_emulated);
+		observe_current_syscall_emulated();
+
+		return 1;
+	}
     else if(lr == (uint64_t)sceSblServiceMailbox_lr_sceSblPfsClearKey_1
          || lr == (uint64_t)sceSblServiceMailbox_lr_sceSblPfsClearKey_2)
     {
