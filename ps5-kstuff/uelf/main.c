@@ -67,24 +67,17 @@ void handle_syscall(uint64_t* regs, int allow_kekcall)
     if(allow_kekcall && IS_PPR(getppid))
     {
         METRIC_INC(syscall_kekcall_dispatches);
-        enum { KEKCALL_ARGS_OFFSET_MAX = syscall_rsp_to_regs_stash + 0x10 + 8 };
-        uint8_t syscall_frame[KEKCALL_ARGS_OFFSET_MAX + sizeof(uint64_t) * NREGS];
         uint64_t args[NREGS] = {0};
-        const uint64_t syscall_extra = (FWVER >= 0x1000 ? 0x10 : 0);
-        uint64_t args_offset = syscall_rsp_to_regs_stash + syscall_extra + 8;
-        if(copy_from_kernel(syscall_frame, regs[RSP], args_offset + sizeof(args)))
-            RETURN_HANDLE_SYSCALL();
-        memcpy(args, syscall_frame + args_offset, sizeof(args));
+        copy_from_kernel(args, kpeek64(regs[RDI]+td_frame), sizeof(args));
         int err = handle_kekcall(regs, args, args[RAX]>>32);
         if(err != ENOSYS)
         {
-            uint64_t syscall_lr = *(const uint64_t*)syscall_frame;
             if(!err)
                 kpoke64(regs[RDI]+td_retval, args[RAX]);
             regs[RAX] = err;
-            regs[RSP] += 8;
-            regs[RIP] = syscall_lr;
+            pop_stack_checked(regs, &regs[RIP], 8);
         }
+
         RETURN_HANDLE_SYSCALL();
     }
 #ifndef FREEBSD
