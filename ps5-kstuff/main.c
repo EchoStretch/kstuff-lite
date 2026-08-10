@@ -799,6 +799,23 @@ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
     dbg_enter();
 #endif
 
+    uint64_t percpu_ist4[NCPUS];
+    for(int cpu = 0; cpu < NCPUS; cpu++)
+        copyout(&percpu_ist4[cpu], TSS(cpu)+28+4*8, 8);
+    uint64_t int1_handler;
+    copyout(&int1_handler, IDT+16*1, 2);
+    copyout((char*)&int1_handler + 2, IDT+16*1+6, 6);
+    uint64_t int3_handler;
+    copyout(&int3_handler, IDT+16*3, 2);
+    copyout((char*)&int3_handler + 2, IDT+16*3+6, 6);
+    uint64_t int13_handler;
+    copyout(&int13_handler, IDT+16*13, 2);
+    copyout((char*)&int13_handler + 2, IDT+16*13+6, 6);
+#ifndef FIRMWARE_PORTING
+    dbg_enter();
+#endif
+    gdb_remote_syscall("write", 3, 0, (uintptr_t)1, (uintptr_t)"allocating kernel memory... ", (uintptr_t)28);
+
 #ifdef USE_INT3_SYSCALL_HOOK
     // this jmp to int3 exists because sony fills certain functions with int3 depending on the console type
     // retails have the most of these redacted functions, testkits less, devkits even less, presumably "DevKit Intdev" has none
@@ -821,22 +838,6 @@ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
     }
 #endif
 
-    uint64_t percpu_ist4[NCPUS];
-    for(int cpu = 0; cpu < NCPUS; cpu++)
-        copyout(&percpu_ist4[cpu], TSS(cpu)+28+4*8, 8);
-    uint64_t int1_handler;
-    copyout(&int1_handler, IDT+16*1, 2);
-    copyout((char*)&int1_handler + 2, IDT+16*1+6, 6);
-    uint64_t int3_handler;
-    copyout(&int3_handler, IDT+16*3, 2);
-    copyout((char*)&int3_handler + 2, IDT+16*3+6, 6);
-    uint64_t int13_handler;
-    copyout(&int13_handler, IDT+16*13, 2);
-    copyout((char*)&int13_handler + 2, IDT+16*13+6, 6);
-#ifndef FIRMWARE_PORTING
-    dbg_enter();
-#endif
-    gdb_remote_syscall("write", 3, 0, (uintptr_t)1, (uintptr_t)"allocating kernel memory... ", (uintptr_t)28);
     for(int i = 0; i < 0x300; i += 2)
         r0gdb_kmalloc(0x100);
     kmalloc_add_block(KMALLOC_CHUNK_SIZE);
