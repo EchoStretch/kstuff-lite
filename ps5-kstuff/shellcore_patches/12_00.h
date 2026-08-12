@@ -39,9 +39,47 @@ static struct shellcore_patch shellcore_patches_1200_retail[] = {
 };
 
 static struct shellcore_patch shellcore_patches_1200_testkit[] = {
+    {0x7EE760, "\xC3", 1}, // callback to sceRifManagerRegisterActivationCallback
+
+    {0x1761110, "\x31\xc0\xc3", 3}, // VR
+    {0x1765660, "\x31\xC0\xC3", 3}, // VR2 Update bypass
+    {0x66FE1F, "\x66\x90", 2}, // force getSceSysDirPath to take isDebuggerOrAppHomeLaunchedApp=1 path, by ArkSama
+    {0xB3855A, "\xEB", 1}, // fix trophies not unlocking in certain games
+    {0xB15AB3, "\xeb\x03", 2}, // disable game error message
+
+    {0x334C10, "\x90\xe9", 2}, // PS4 Disc Installer Patch 1
+    {0x334C8A, "\x90\xe9", 2}, // PS5 Disc Installer Patch 1
+    {0x334D8C, "\xeb", 1}, // PS4 PKG Installer Patch 1
+    {0x334E60, "\xeb", 1}, // PS5 PKG Installer Patch 1
+    {0x335081, "\x90\xe9", 2}, // PS4 PKG Installer Patch 2
+    {0x335192, "\xeb", 1}, // PS5 PKG Installer Patch 2
+    {0x33566A, "\x90\xe9", 2}, // PS4 PKG Installer Patch 3
+    {0x3356FD, "\x90\xe9", 2}, // PS5 PKG Installer Patch 3
+    {0x7A1BD8, "\xeb", 1}, // PS4 PKG Installer Patch 4
+    {0x7A5742, "\xeb", 1}, // PS5 PKG Installer Patch 4
+    {0x7A9380, "\x48\x31\xc0\xc3", 4}, // PKG Installer
 };
 
 static struct shellcore_patch shellcore_patches_1200_devkit[] = {
+    {0x7F0310, "\xC3", 1}, // callback to sceRifManagerRegisterActivationCallback
+
+    {0x1762D10, "\x31\xc0\xc3", 3}, // VR
+    {0x1767260, "\x31\xC0\xC3", 3}, // VR2 Update bypass
+    {0x6719CF, "\x66\x90", 2}, // force getSceSysDirPath to take isDebuggerOrAppHomeLaunchedApp=1 path, by ArkSama
+    {0xB3A18A, "\xEB", 1}, // fix trophies not unlocking in certain games
+    {0xB176E3, "\xeb\x03", 2}, // disable game error message
+
+    {0x336720, "\x90\xe9", 2}, // PS4 Disc Installer Patch 1
+    {0x33679A, "\x90\xe9", 2}, // PS5 Disc Installer Patch 1
+    {0x33689C, "\xeb", 1}, // PS4 PKG Installer Patch 1
+    {0x336970, "\xeb", 1}, // PS5 PKG Installer Patch 1
+    {0x336B91, "\x90\xe9", 2}, // PS4 PKG Installer Patch 2
+    {0x336CA2, "\xeb", 1}, // PS5 PKG Installer Patch 2
+    {0x33717A, "\x90\xe9", 2}, // PS4 PKG Installer Patch 3
+    {0x33720D, "\x90\xe9", 2}, // PS5 PKG Installer Patch 3
+    {0x7A3788, "\xeb", 1}, // PS4 PKG Installer Patch 4
+    {0x7A72F2, "\xeb", 1}, // PS5 PKG Installer Patch 4
+    {0x7AAF30, "\x48\x31\xc0\xc3", 4}, // PKG Installer
 };
 
 #endif // SHELLCORE_PATCHES_12_00
