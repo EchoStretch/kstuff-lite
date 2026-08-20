@@ -1442,6 +1442,28 @@ static void* other_thread_fn(void* arg)
         asm volatile("");
 }
 
+static int set_user_gsbase(uint64_t base) 
+{
+    // unlike sysarch(AMD64_SET_GSBASE), setcontext does not check if the base is below VM_MAXUSER_ADDRESS
+    uint64_t data[0x4c0 / 8];
+    volatile int resumed = 0;
+
+    if (getcontext((void*)data))
+        return -1;
+
+    if (resumed)
+        return 0;
+
+    resumed = 1;
+    data[0xd0 / 8] |= 2;     // mc_flags |= _MC_HASBASES
+    data[0x488 / 8] = base;  // mc_gsbase
+
+    if (setcontext((void*)data))
+        return -1;
+
+    __builtin_unreachable();
+}
+
 static uint64_t syscall_cfi_table_base = 0;
 static void trace_find_syscall_cfi_table_jmp_int3_addr(uint64_t* regs)
 {
@@ -1466,7 +1488,13 @@ static void trace_find_syscall_cfi_table_jmp_int3_addr(uint64_t* regs)
     SKIP_SCHEDULER
     if (syscall_cfi_table_base != 0)
         return;
-
+    
+    // some fws have a `mov     rax, gs:0` as the first instruction
+    // set user gsbase, its not used anyway
+    if (set_user_gsbase(kstack - 0x2000)) {
+        return 0;
+    }
+    
     if (regs[0] == offsets.syscall_before)
     {
         // the syscall_cfi_table_base was loaded into rcx on all fws so far
@@ -1519,8 +1547,8 @@ uint64_t r0gdb_find_syscall_cfi_table_jmp_int3_addr(void)
 
     uint64_t syscall_cfi_table_jmp_int3_addr = 0;
 
-    // single step first 500 entries to try and find the jmp to int3
-    for (int i = 0; i < 500; i++)
+    // single step first 700 entries to try and find the jmp to int3
+    for (int i = 0; i < 700; i++)
     {
         uint64_t entry_rip = syscall_cfi_table_base + i * 8;
         
@@ -1538,7 +1566,6 @@ uint64_t r0gdb_find_syscall_cfi_table_jmp_int3_addr(void)
         }
 
         // set arg regs to something valid, in case first instruction is a memory read
-        // although in my kernel i only see push/test/mov imm/int3 as the first instructions in this table
         regs.rdi = kstack - 0x2000;
         regs.rsi = kstack - 0x2000;
         regs.rdx = kstack - 0x2000;
