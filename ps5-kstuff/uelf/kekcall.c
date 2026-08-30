@@ -7,6 +7,9 @@
 #include "traps.h"
 #include "utils.h"
 #include "log.h"
+#if KSTUFF_SELF_ELEVATION
+#include "self_elevation.h"
+#endif
 
 extern char syscall_after[];
 extern char doreti_iret[];
@@ -87,6 +90,15 @@ int handle_kekcall(uint64_t* regs, uint64_t* args, uint32_t nr)
         return ENOSYS;
 #endif
     }
+#if KSTUFF_SELF_ELEVATION
+    else if(nr == KSTUFF_SELF_ELEVATION_OP)
+    {
+        int err = elevate_current_process(regs[RDI], args[RDI], args[RSI], args[RDX]);
+        if(!err)
+            args[RAX] = 0;
+        return err;
+    }
+#endif
    else if(nr == 0xffffffff)
     {
         args[RAX] = 0;
