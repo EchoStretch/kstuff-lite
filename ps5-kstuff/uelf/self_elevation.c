@@ -271,9 +271,9 @@ int elevate_current_process(uint64_t thread, uint64_t magic, uint64_t version,
 
     if(magic != KSTUFF_SELF_ELEVATION_MAGIC
     || version != KSTUFF_SELF_ELEVATION_ABI_VERSION
-    || (profile != KSTUFF_SELF_ELEVATION_PROFILE_DATA_ACCESS
-     && profile != KSTUFF_SELF_ELEVATION_PROFILE_PROCESS_MEMORY
-     && profile != KSTUFF_SELF_ELEVATION_PROFILE_DEBUG))
+    || (profile != KSTUFF_PROFILE_DATA_ACCESS
+     && profile != KSTUFF_PROFILE_PROCESS_MEMORY
+     && profile != KSTUFF_PROFILE_DEBUG))
         return EINVAL;
     if(!(layout = select_layout()))
         return EPROTONOSUPPORT;
@@ -299,9 +299,9 @@ int elevate_current_process(uint64_t thread, uint64_t magic, uint64_t version,
     target.rgid = 0;
     target.svgid = 0;
     target.prison = root.prison;
-    if(profile == KSTUFF_SELF_ELEVATION_PROFILE_PROCESS_MEMORY)
+    if(profile == KSTUFF_PROFILE_PROCESS_MEMORY)
         target.auth_id = COREDUMP_AUTH_ID;
-    else if(profile == KSTUFF_SELF_ELEVATION_PROFILE_DEBUG)
+    else if(profile == KSTUFF_PROFILE_DEBUG)
         target.auth_id = DEBUG_AUTH_ID;
     else
         target.auth_id = SYSTEM_AUTH_ID;
