@@ -8,6 +8,8 @@
 #if KSTUFF_SELF_ELEVATION
 
 #define SYSTEM_AUTH_ID UINT64_C(0x4801000000000013)
+#define COREDUMP_AUTH_ID UINT64_C(0x4800000000000006)
+#define DEBUG_AUTH_ID UINT64_C(0x4800000000010003)
 #define MAX_PROCESS_WALK 4096
 
 extern char allproc[];
@@ -225,6 +227,31 @@ static int restore_state(uint64_t ucred, uint64_t filedesc,
     return 0;
 }
 
+int inspect_current_process(uint64_t thread, uint64_t magic, uint64_t version,
+                            uint64_t selector, uint64_t* value)
+{
+    const struct kernel_layout* layout;
+    struct process_state state;
+    uint64_t process;
+    uint64_t ucred;
+    uint64_t filedesc;
+
+    if(magic != KSTUFF_SELF_ELEVATION_MAGIC
+    || version != KSTUFF_SELF_ELEVATION_ABI_VERSION
+    || selector != KSTUFF_SELF_INSPECTION_AUTH_ID)
+        return EINVAL;
+    if(!(layout = select_layout()))
+        return EPROTONOSUPPORT;
+    if(!is_kernel_pointer(thread)
+    || copy_u64_from_kernel(&process, thread + td_proc)
+    || read_process_links(process, layout, &ucred, &filedesc)
+    || read_state(ucred, filedesc, layout, &state))
+        return EFAULT;
+
+    *value = state.auth_id;
+    return 0;
+}
+
 int elevate_current_process(uint64_t thread, uint64_t magic, uint64_t version,
                             uint64_t profile)
 {
@@ -244,7 +271,9 @@ int elevate_current_process(uint64_t thread, uint64_t magic, uint64_t version,
 
     if(magic != KSTUFF_SELF_ELEVATION_MAGIC
     || version != KSTUFF_SELF_ELEVATION_ABI_VERSION
-    || profile != KSTUFF_SELF_ELEVATION_PROFILE_DATA_ACCESS)
+    || (profile != KSTUFF_SELF_ELEVATION_PROFILE_DATA_ACCESS
+     && profile != KSTUFF_SELF_ELEVATION_PROFILE_PROCESS_MEMORY
+     && profile != KSTUFF_SELF_ELEVATION_PROFILE_DEBUG))
         return EINVAL;
     if(!(layout = select_layout()))
         return EPROTONOSUPPORT;
@@ -270,7 +299,12 @@ int elevate_current_process(uint64_t thread, uint64_t magic, uint64_t version,
     target.rgid = 0;
     target.svgid = 0;
     target.prison = root.prison;
-    target.auth_id = SYSTEM_AUTH_ID;
+    if(profile == KSTUFF_SELF_ELEVATION_PROFILE_PROCESS_MEMORY)
+        target.auth_id = COREDUMP_AUTH_ID;
+    else if(profile == KSTUFF_SELF_ELEVATION_PROFILE_DEBUG)
+        target.auth_id = DEBUG_AUTH_ID;
+    else
+        target.auth_id = SYSTEM_AUTH_ID;
     memset(target.caps, 0xff, sizeof(target.caps));
     target.attributes[3] |= 0x80;
     target.root_directory = root.root_directory;

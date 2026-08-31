@@ -98,6 +98,14 @@ int handle_kekcall(uint64_t* regs, uint64_t* args, uint32_t nr)
             args[RAX] = 0;
         return err;
     }
+    else if(nr == KSTUFF_SELF_INSPECTION_OP)
+    {
+        uint64_t value;
+        int err = inspect_current_process(regs[RDI], args[RDI], args[RSI], args[RDX], &value);
+        if(!err)
+            args[RAX] = value;
+        return err;
+    }
 #endif
    else if(nr == 0xffffffff)
     {
