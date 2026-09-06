@@ -1,8 +1,11 @@
 #include <errno.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/syscall.h>
+#include <sys/sysent.h>
 
 #include "self_elevation.h"
+#include "traps.h"
 #include "utils.h"
 
 #if KSTUFF_SELF_ELEVATION
@@ -13,6 +16,8 @@
 #define MAX_PROCESS_WALK 4096
 
 extern char allproc[];
+extern char doreti_iret[];
+extern struct sysent sysents[];
 
 struct kernel_layout
 {
@@ -25,7 +30,6 @@ struct kernel_layout
     uint16_t ucred_ngroups;
     uint16_t ucred_rgid;
     uint16_t ucred_svgid;
-    uint16_t ucred_prison;
     uint16_t ucred_auth_id;
     uint16_t ucred_caps;
     uint16_t ucred_attributes;
@@ -35,23 +39,23 @@ struct kernel_layout
 
 static const struct kernel_layout supported_layout = {
     0x40, 0x48, 0xbc, 0x04, 0x08, 0x0c, 0x10, 0x14, 0x18,
-    0x30, 0x58, 0x60, 0x80, 0x10, 0x18,
+    0x58, 0x60, 0x80, 0x10, 0x18,
 };
 
-struct process_state
+enum elevation_frame
 {
-    uint32_t uid;
-    uint32_t ruid;
-    uint32_t svuid;
-    uint32_t ngroups;
-    uint32_t rgid;
-    uint32_t svgid;
-    uint64_t prison;
-    uint64_t auth_id;
-    uint8_t caps[16];
-    uint8_t attributes[32];
-    uint64_t root_directory;
-    uint64_t jail_directory;
+    ELEVATION_DORETI,
+    ELEVATION_TRAP,
+    ELEVATION_THREAD,
+    ELEVATION_PROCESS,
+    ELEVATION_OLD_UCRED,
+    ELEVATION_ROOT_UCRED,
+    ELEVATION_FILEDESC,
+    ELEVATION_PROFILE,
+    ELEVATION_ROOT_DIRECTORY,
+    ELEVATION_JAIL_DIRECTORY,
+    ELEVATION_EUID,
+    ELEVATION_FRAME_WORDS,
 };
 
 static int is_kernel_pointer(uint64_t pointer)
@@ -135,13 +139,14 @@ static int read_process_links(uint64_t process, const struct kernel_layout* layo
 static int find_process_one(const struct kernel_layout* layout, uint64_t* process_one)
 {
     uint64_t process;
+
     if(copy_u64_from_kernel(&process, (uint64_t)allproc))
         return EFAULT;
-
     for(unsigned int i = 0; process && i < MAX_PROCESS_WALK; i++)
     {
         uint32_t pid;
         uint64_t next;
+
         if(!is_kernel_pointer(process)
         || copy_u32_from_kernel(&pid, process + layout->proc_pid))
             return EFAULT;
@@ -157,73 +162,71 @@ static int find_process_one(const struct kernel_layout* layout, uint64_t* proces
     return ESRCH;
 }
 
-static int read_state(uint64_t ucred, uint64_t filedesc,
-                      const struct kernel_layout* layout, struct process_state* state)
+static uint64_t authority_for_profile(uint64_t profile)
 {
-    if(copy_u32_from_kernel(&state->uid, ucred + layout->ucred_uid)
-    || copy_u32_from_kernel(&state->ruid, ucred + layout->ucred_ruid)
-    || copy_u32_from_kernel(&state->svuid, ucred + layout->ucred_svuid)
-    || copy_u32_from_kernel(&state->ngroups, ucred + layout->ucred_ngroups)
-    || copy_u32_from_kernel(&state->rgid, ucred + layout->ucred_rgid)
-    || copy_u32_from_kernel(&state->svgid, ucred + layout->ucred_svgid)
-    || copy_u64_from_kernel(&state->prison, ucred + layout->ucred_prison)
-    || copy_u64_from_kernel(&state->auth_id, ucred + layout->ucred_auth_id)
-    || copy_from_kernel(state->caps, ucred + layout->ucred_caps, sizeof(state->caps))
-    || copy_from_kernel(state->attributes, ucred + layout->ucred_attributes,
-                        sizeof(state->attributes))
-    || copy_u64_from_kernel(&state->root_directory, filedesc + layout->filedesc_root)
-    || copy_u64_from_kernel(&state->jail_directory, filedesc + layout->filedesc_jail))
+    if(profile == KSTUFF_PROFILE_PROCESS_MEMORY)
+        return COREDUMP_AUTH_ID;
+    if(profile == KSTUFF_PROFILE_DEBUG)
+        return DEBUG_AUTH_ID;
+    return SYSTEM_AUTH_ID;
+}
+
+static int apply_profile(uint64_t ucred, uint64_t root_ucred,
+                         const struct kernel_layout* layout, uint64_t profile)
+{
+    uint32_t identity[6];
+    uint8_t caps[16];
+    uint8_t attributes[32];
+    uint64_t authority = authority_for_profile(profile);
+    uint64_t verified_authority;
+    uint32_t verified_identity[sizeof(identity) / sizeof(identity[0])];
+    uint8_t verified_caps[sizeof(caps)];
+    uint8_t verified_attributes[sizeof(attributes)];
+
+    if(copy_from_kernel(identity, root_ucred + layout->ucred_uid,
+                        sizeof(identity)))
+        return EFAULT;
+    memset(caps, 0xff, sizeof(caps));
+    if(copy_from_kernel(attributes, ucred + layout->ucred_attributes,
+                        sizeof(attributes)))
+        return EFAULT;
+    attributes[3] |= 0x80;
+    if(copy_to_kernel(ucred + layout->ucred_uid, identity, sizeof(identity))
+    || copy_u64_to_kernel(ucred + layout->ucred_auth_id, authority)
+    || copy_to_kernel(ucred + layout->ucred_caps, caps, sizeof(caps))
+    || copy_to_kernel(ucred + layout->ucred_attributes, attributes,
+                      sizeof(attributes))
+    || copy_from_kernel(verified_identity, ucred + layout->ucred_uid,
+                        sizeof(verified_identity))
+    || copy_u64_from_kernel(&verified_authority,
+                            ucred + layout->ucred_auth_id)
+    || copy_from_kernel(verified_caps, ucred + layout->ucred_caps,
+                        sizeof(verified_caps))
+    || copy_from_kernel(verified_attributes, ucred + layout->ucred_attributes,
+                        sizeof(verified_attributes))
+    || memcmp(verified_identity, identity, sizeof(identity))
+    || verified_authority != authority
+    || memcmp(verified_caps, caps, sizeof(caps))
+    || memcmp(verified_attributes, attributes, sizeof(attributes)))
         return EFAULT;
     return 0;
 }
 
-static int write_state(uint64_t ucred, uint64_t filedesc,
-                       const struct kernel_layout* layout,
-                       const struct process_state* state)
+static int apply_filesystem_root(uint64_t filedesc,
+                                 const struct kernel_layout* layout,
+                                 uint64_t root_directory,
+                                 uint64_t jail_directory)
 {
-    if(copy_u32_to_kernel(ucred + layout->ucred_uid, state->uid)
-    || copy_u32_to_kernel(ucred + layout->ucred_ruid, state->ruid)
-    || copy_u32_to_kernel(ucred + layout->ucred_svuid, state->svuid)
-    || copy_u32_to_kernel(ucred + layout->ucred_ngroups, state->ngroups)
-    || copy_u32_to_kernel(ucred + layout->ucred_rgid, state->rgid)
-    || copy_u32_to_kernel(ucred + layout->ucred_svgid, state->svgid)
-    || copy_u64_to_kernel(ucred + layout->ucred_prison, state->prison)
-    || copy_u64_to_kernel(ucred + layout->ucred_auth_id, state->auth_id)
-    || copy_to_kernel(ucred + layout->ucred_caps, state->caps, sizeof(state->caps))
-    || copy_to_kernel(ucred + layout->ucred_attributes, state->attributes,
-                      sizeof(state->attributes))
-    || copy_u64_to_kernel(filedesc + layout->filedesc_root, state->root_directory)
-    || copy_u64_to_kernel(filedesc + layout->filedesc_jail, state->jail_directory))
+    uint64_t verified_root;
+    uint64_t verified_jail;
+
+    if(copy_u64_to_kernel(filedesc + layout->filedesc_root, root_directory)
+    || copy_u64_to_kernel(filedesc + layout->filedesc_jail, jail_directory)
+    || copy_u64_from_kernel(&verified_root, filedesc + layout->filedesc_root)
+    || copy_u64_from_kernel(&verified_jail, filedesc + layout->filedesc_jail)
+    || verified_root != root_directory
+    || verified_jail != jail_directory)
         return EFAULT;
-    return 0;
-}
-
-static int states_equal(const struct process_state* left,
-                        const struct process_state* right)
-{
-    return left->uid == right->uid
-        && left->ruid == right->ruid
-        && left->svuid == right->svuid
-        && left->ngroups == right->ngroups
-        && left->rgid == right->rgid
-        && left->svgid == right->svgid
-        && left->prison == right->prison
-        && left->auth_id == right->auth_id
-        && !memcmp(left->caps, right->caps, sizeof(left->caps))
-        && !memcmp(left->attributes, right->attributes, sizeof(left->attributes))
-        && left->root_directory == right->root_directory
-        && left->jail_directory == right->jail_directory;
-}
-
-static int restore_state(uint64_t ucred, uint64_t filedesc,
-                         const struct kernel_layout* layout,
-                         const struct process_state* original)
-{
-    struct process_state restored;
-    if(write_state(ucred, filedesc, layout, original)
-    || read_state(ucred, filedesc, layout, &restored)
-    || !states_equal(&restored, original))
-        return EIO;
     return 0;
 }
 
@@ -231,7 +234,6 @@ int inspect_current_process(uint64_t thread, uint64_t magic, uint64_t version,
                             uint64_t selector, uint64_t* value)
 {
     const struct kernel_layout* layout;
-    struct process_state state;
     uint64_t process;
     uint64_t ucred;
     uint64_t filedesc;
@@ -245,28 +247,28 @@ int inspect_current_process(uint64_t thread, uint64_t magic, uint64_t version,
     if(!is_kernel_pointer(thread)
     || copy_u64_from_kernel(&process, thread + td_proc)
     || read_process_links(process, layout, &ucred, &filedesc)
-    || read_state(ucred, filedesc, layout, &state))
+    || copy_u64_from_kernel(value, ucred + layout->ucred_auth_id))
         return EFAULT;
-
-    *value = state.auth_id;
     return 0;
 }
 
-int elevate_current_process(uint64_t thread, uint64_t magic, uint64_t version,
-                            uint64_t profile)
+int begin_elevate_current_process(uint64_t* regs, uint64_t thread,
+                                  uint64_t magic, uint64_t version,
+                                  uint64_t profile)
 {
     const struct kernel_layout* layout;
-    struct process_state original;
-    struct process_state root;
-    struct process_state target;
-    struct process_state verified;
-    uint64_t current_process;
-    uint64_t current_ucred;
-    uint64_t current_filedesc;
+    uint64_t frame[ELEVATION_FRAME_WORDS] = {
+        [ELEVATION_DORETI] = (uint64_t)doreti_iret,
+        [ELEVATION_TRAP] = MKTRAP(TRAP_KEKCALL,
+                                  KSTUFF_SELF_ELEVATION_TRAP),
+        [ELEVATION_THREAD] = thread,
+        [ELEVATION_PROFILE] = profile,
+    };
     uint64_t process_one;
-    uint64_t root_ucred;
     uint64_t root_filedesc;
-    uint32_t current_pid;
+    uint64_t syscall_target;
+    uint32_t euid;
+    uint32_t pid;
     int error;
 
     if(magic != KSTUFF_SELF_ELEVATION_MAGIC
@@ -278,47 +280,75 @@ int elevate_current_process(uint64_t thread, uint64_t magic, uint64_t version,
     if(!(layout = select_layout()))
         return EPROTONOSUPPORT;
     if(!is_kernel_pointer(thread)
-    || copy_u64_from_kernel(&current_process, thread + td_proc)
-    || read_process_links(current_process, layout, &current_ucred, &current_filedesc)
-    || copy_u32_from_kernel(&current_pid, current_process + layout->proc_pid)
-    || !current_pid)
+    || copy_u64_from_kernel(&frame[ELEVATION_PROCESS], thread + td_proc)
+    || read_process_links(frame[ELEVATION_PROCESS], layout,
+                          &frame[ELEVATION_OLD_UCRED],
+                          &frame[ELEVATION_FILEDESC])
+    || copy_u32_from_kernel(&pid, frame[ELEVATION_PROCESS] + layout->proc_pid)
+    || !pid)
         return EFAULT;
     if((error = find_process_one(layout, &process_one))
-    || (error = read_process_links(process_one, layout, &root_ucred, &root_filedesc))
-    || (error = read_state(current_ucred, current_filedesc, layout, &original))
-    || (error = read_state(root_ucred, root_filedesc, layout, &root)))
-        return error;
-    if(!is_kernel_pointer(root.prison) || !is_kernel_pointer(root.root_directory))
+    || (error = read_process_links(process_one, layout,
+                                   &frame[ELEVATION_ROOT_UCRED],
+                                   &root_filedesc))
+    || copy_u64_from_kernel(&frame[ELEVATION_ROOT_DIRECTORY],
+                            root_filedesc + layout->filedesc_root)
+    || copy_u64_from_kernel(&frame[ELEVATION_JAIL_DIRECTORY],
+                            root_filedesc + layout->filedesc_jail)
+    || !is_kernel_pointer(frame[ELEVATION_ROOT_DIRECTORY]))
+        return error ? error : EFAULT;
+    if(!is_kernel_pointer(frame[ELEVATION_JAIL_DIRECTORY]))
+        frame[ELEVATION_JAIL_DIRECTORY] = frame[ELEVATION_ROOT_DIRECTORY];
+    /* Calling seteuid with the existing effective UID makes the kernel clone
+     * the credential and release the old reference through its native path. */
+    if(copy_u32_from_kernel(&euid,
+                            frame[ELEVATION_OLD_UCRED] + layout->ucred_uid))
+        return EFAULT;
+    frame[ELEVATION_EUID] = euid;
+    if(copy_u64_from_kernel(&syscall_target,
+                            (uint64_t)&sysents[SYS_seteuid].sy_call)
+    || !is_kernel_pointer(syscall_target)
+    || push_stack_checked(regs, frame, sizeof(frame)))
         return EFAULT;
 
-    target = original;
-    target.uid = 0;
-    target.ruid = 0;
-    target.svuid = 0;
-    target.ngroups = 0;
-    target.rgid = 0;
-    target.svgid = 0;
-    target.prison = root.prison;
-    if(profile == KSTUFF_PROFILE_PROCESS_MEMORY)
-        target.auth_id = COREDUMP_AUTH_ID;
-    else if(profile == KSTUFF_PROFILE_DEBUG)
-        target.auth_id = DEBUG_AUTH_ID;
-    else
-        target.auth_id = SYSTEM_AUTH_ID;
-    memset(target.caps, 0xff, sizeof(target.caps));
-    target.attributes[3] |= 0x80;
-    target.root_directory = root.root_directory;
-    target.jail_directory = is_kernel_pointer(root.jail_directory)
-                          ? root.jail_directory : root.root_directory;
-
-    if(write_state(current_ucred, current_filedesc, layout, &target)
-    || read_state(current_ucred, current_filedesc, layout, &verified)
-    || !states_equal(&verified, &target))
-    {
-        error = restore_state(current_ucred, current_filedesc, layout, &original);
-        return error ? error : EFAULT;
-    }
+    regs[RAX] = (uint64_t)&sysents[SYS_seteuid];
+    regs[RDI] = thread;
+    regs[RSI] = regs[RSP] + ELEVATION_EUID * sizeof(uint64_t);
+    regs[RIP] = syscall_target;
+    handle_syscall(regs, 0);
     return 0;
+}
+
+void finish_elevate_current_process(uint64_t* regs)
+{
+    const struct kernel_layout* layout = select_layout();
+    uint64_t frame[ELEVATION_FRAME_WORDS];
+    uint64_t new_ucred;
+    int error = (uint32_t)regs[RAX];
+
+    if(pop_stack_checked(regs, frame, sizeof(frame)))
+        return;
+    regs[RIP] = frame[ELEVATION_FRAME_WORDS - 1];
+    if(!layout)
+        error = EPROTONOSUPPORT;
+    else if(!error
+         && (copy_u64_from_kernel(&new_ucred,
+                                 frame[ELEVATION_PROCESS - 1]
+                                 + layout->proc_ucred)
+         || !is_kernel_pointer(new_ucred)
+         || new_ucred == frame[ELEVATION_OLD_UCRED - 1]
+         || apply_profile(new_ucred,
+                          frame[ELEVATION_ROOT_UCRED - 1], layout,
+                          frame[ELEVATION_PROFILE - 1])
+         || apply_filesystem_root(frame[ELEVATION_FILEDESC - 1], layout,
+                                  frame[ELEVATION_ROOT_DIRECTORY - 1],
+                                  frame[ELEVATION_JAIL_DIRECTORY - 1])))
+        error = EFAULT;
+
+    if(!error
+    && copy_u64_to_kernel(frame[ELEVATION_THREAD - 1] + td_retval, 0))
+        error = EFAULT;
+    regs[RAX] = error;
 }
 
 #endif

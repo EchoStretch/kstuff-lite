@@ -93,10 +93,9 @@ int handle_kekcall(uint64_t* regs, uint64_t* args, uint32_t nr)
 #if KSTUFF_SELF_ELEVATION
     else if(nr == KSTUFF_SELF_ELEVATION_OP)
     {
-        int err = elevate_current_process(regs[RDI], args[RDI], args[RSI], args[RDX]);
-        if(!err)
-            args[RAX] = 0;
-        return err;
+        int err = begin_elevate_current_process(regs, regs[RDI], args[RDI],
+                                                args[RSI], args[RDX]);
+        return err ? err : ENOSYS;
     }
     else if(nr == KSTUFF_SELF_INSPECTION_OP)
     {
@@ -255,4 +254,10 @@ fail_remote_syscall:
         }
         regs[RIP] = stack_frame[13];
     }
+#if KSTUFF_SELF_ELEVATION
+    else if(trap == KSTUFF_SELF_ELEVATION_TRAP)
+    {
+        finish_elevate_current_process(regs);
+    }
+#endif
 }
