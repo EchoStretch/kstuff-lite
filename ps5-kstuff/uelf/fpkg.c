@@ -26,6 +26,14 @@ enum {
     PPR_PFS_940_GET_CMAC_INDEX_FROM_MAILBOX = 0x5b2ce0,
     PPR_PFS_940_GET_XTS_RETURN_BEFORE_MAILBOX = 0x208902,
     PPR_PFS_940_GET_CMAC_RETURN_BEFORE_MAILBOX = 0x2088b4,
+    /* cleanup_a53io_pkg_keys entry 0xffffffff954b7d60. */
+    PPR_PFS_940_CLEANUP_KEYS_BEFORE_MAILBOX = 0x2109d0,
+    /*
+     * sceSblPfsClearKey's tree-miss status instruction at
+     * 0xffffffff953e0409.  The private FD/FC pair is deliberately absent
+     * from that tree, so complete only that exact miss as success.
+     */
+    PPR_PFS_940_CLEAR_KEY_MISSING_BEFORE_MAILBOX = 0x2e8327,
     /*
      * The PPR verifyImage mailbox return at 0xffffffff953defa0 is
      * 0x1d00 bytes before the existing verifySuperBlock return at
@@ -77,6 +85,81 @@ static uint64_t ppr_pfs_plaintext_get_cmac_index(void)
         return 0;
     return (uint64_t)sceSblServiceMailbox
          + PPR_PFS_940_GET_CMAC_INDEX_FROM_MAILBOX;
+}
+
+static uint64_t ppr_pfs_plaintext_cleanup_keys(void)
+{
+    if(FWVER != 0x940)
+        return 0;
+    return (uint64_t)sceSblServiceMailbox
+         - PPR_PFS_940_CLEANUP_KEYS_BEFORE_MAILBOX;
+}
+
+static uint64_t ppr_pfs_plaintext_clear_key_missing(void)
+{
+    if(FWVER != 0x940)
+        return 0;
+    return (uint64_t)sceSblServiceMailbox
+         - PPR_PFS_940_CLEAR_KEY_MISSING_BEFORE_MAILBOX;
+}
+
+static uint64_t* ppr_plaintext_index_counter(int cmac)
+{
+    return cmac ? &shared_area.ppr_plaintext_cmac_indices_outstanding
+                : &shared_area.ppr_plaintext_xts_indices_outstanding;
+}
+
+static void retain_ppr_plaintext_key_pair(void)
+{
+    __atomic_fetch_add(ppr_plaintext_index_counter(0), 1, __ATOMIC_RELEASE);
+    __atomic_fetch_add(ppr_plaintext_index_counter(1), 1, __ATOMIC_RELEASE);
+}
+
+static int has_ppr_plaintext_key_index(int cmac)
+{
+    return __atomic_load_n(ppr_plaintext_index_counter(cmac),
+                           __ATOMIC_ACQUIRE) != 0;
+}
+
+static int has_ppr_plaintext_key_pair(void)
+{
+    return has_ppr_plaintext_key_index(0)
+        || has_ppr_plaintext_key_index(1);
+}
+
+static int release_ppr_plaintext_key_index(int cmac, uint64_t* remaining)
+{
+    uint64_t* counter = ppr_plaintext_index_counter(cmac);
+    uint64_t old = __atomic_load_n(
+        counter,
+        __ATOMIC_ACQUIRE);
+    while(old)
+    {
+        if(__atomic_compare_exchange_n(
+               counter,
+               &old, old - 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        {
+            if(remaining)
+                *remaining = old - 1;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int release_ppr_plaintext_key_pair(uint64_t* xts_remaining,
+                                          uint64_t* cmac_remaining)
+{
+    if(!release_ppr_plaintext_key_index(0, xts_remaining))
+        return 0;
+    if(!release_ppr_plaintext_key_index(1, cmac_remaining))
+    {
+        /* Keep both lifetimes paired if an unexpected concurrent clear won. */
+        __atomic_fetch_add(ppr_plaintext_index_counter(0), 1,
+                           __ATOMIC_RELEASE);
+        return 0;
+    }
+    return 1;
 }
 
 static uint64_t ppr_pfs_verify_image_lr(void)
@@ -498,6 +581,114 @@ static void try_emulate_plaintext_key_index(uint64_t* regs, int cmac)
 #endif
 }
 
+static void try_prepare_plaintext_key_cleanup(uint64_t* regs)
+{
+    uint64_t cleanup_context = 0;
+    uint64_t key_indices = 0;
+    uint64_t xts_retained = 0;
+    uint64_t cmac_retained = 0;
+    const uint64_t synthetic_indices = 0x000000fe000000ffull;
+
+    /*
+     * The 9.40 entry has a five-byte no-op frame shim followed by a jump to
+     * entry+0x10. Emulate that shim for every hit so an unrelated native
+     * cleanup can continue even while a plaintext mount is outstanding.
+     */
+    canonicalize_debug_gprs(regs);
+    regs[RIP] = ppr_pfs_plaintext_cleanup_keys() + 0x10;
+
+    /*
+     * a1[271] points at the transient ppfs cleanup context. XTS and CMAC
+     * indices are adjacent dwords at +56/+60. They were never reserved in the
+     * stock allocator, so convert only the exact FF/FE pair to its normal
+     * "not installed" representation before the original cleanup tests it.
+     */
+    if(!has_ppr_plaintext_key_index(0)
+    || !has_ppr_plaintext_key_index(1)
+    || (regs[RDI] >> 48) != 0xffff
+    || copy_u64_from_kernel(&cleanup_context,
+                            regs[RDI] + 271 * sizeof(uint64_t)))
+        return;
+    cleanup_context = canonicalize_debug_kernel_pointer(cleanup_context);
+    if((cleanup_context >> 48) != 0xffff
+    || copy_u64_from_kernel(&key_indices, cleanup_context + 56)
+    || key_indices != synthetic_indices)
+        return;
+    if(copy_u64_to_kernel(cleanup_context + 56, UINT64_MAX))
+    {
+        METRIC_INC(ppr_plaintext_g6_copy_failures);
+        return;
+    }
+
+    /*
+     * The original body now skips both ppfs_put_* calls and performs the rest
+     * of its context/VFS teardown unchanged.  Do not release the retained
+     * handles here: ppr_pfs_unmount subsequently calls sceSblPfsClearKey for
+     * the FD/FC pair.  Its stock tree lookup must miss because the private
+     * pair was never registered; the exact miss trap is the lifetime end of
+     * both synthetic keys.
+     */
+    xts_retained = __atomic_load_n(ppr_plaintext_index_counter(0),
+                                   __ATOMIC_ACQUIRE);
+    cmac_retained = __atomic_load_n(ppr_plaintext_index_counter(1),
+                                    __ATOMIC_ACQUIRE);
+    observe_current_syscall_emulated();
+#if KSTUFF_OBS
+    log_word(0x505052434c4e3031ull); /* "PPRCLN01" */
+    log_word(cleanup_context);
+    log_word(key_indices);
+    log_word(xts_retained);
+    log_word(cmac_retained);
+#endif
+}
+
+static void try_emulate_plaintext_clear_key_missing(uint64_t* regs)
+{
+    const uint64_t expected_pair =
+        ((uint64_t)PPR_PFS_PLAINTEXT_XTS_HANDLE << 32)
+      | PPR_PFS_PLAINTEXT_CMAC_HANDLE;
+    uint64_t xts_remaining = 0;
+    uint64_t cmac_remaining = 0;
+    uint64_t trap = ppr_pfs_plaintext_clear_key_missing();
+    int expected_args = regs[R13] == expected_pair
+                     || (regs[R14] == PPR_PFS_PLAINTEXT_XTS_HANDLE
+                      && regs[R15] == PPR_PFS_PLAINTEXT_CMAC_HANDLE);
+
+    /*
+     * The trapped instruction is `mov ebx, 0xfffffffe`.  Reproduce it for
+     * every unrelated tree miss.  At this point sceSblPfsClearKey has already
+     * normally built (a1 << 32) | a2 in R13 and still owns its normal
+     * lock/frame.  If the tree root itself is null, the branch arrives before
+     * that construction and the original zero-extended arguments remain in
+     * R14/R15, so accept that equivalent exact shape too.
+     */
+    if(!expected_args
+    || !has_ppr_plaintext_key_index(0)
+    || !has_ppr_plaintext_key_index(1)
+    || !release_ppr_plaintext_key_pair(&xts_remaining, &cmac_remaining))
+    {
+        regs[RBX] = UINT32_MAX - 1u;
+        regs[RIP] = trap + 5;
+        return;
+    }
+
+    /*
+     * Skip the diagnostic call but retain sceSblPfsClearKey's stock unlock,
+     * stack-canary check and epilogue at loc_ffffffff953e041f.
+     */
+    regs[RBX] = 0;
+    regs[RIP] = trap + 0x16;
+    METRIC_INC(clear_key_emulated);
+    observe_current_syscall_emulated();
+#if KSTUFF_OBS
+    log_word(0x505052434c523031ull); /* "PPRCLR01" */
+    log_word(expected_pair);
+    log_word(xts_remaining);
+    log_word(cmac_remaining);
+    log_word(regs[RIP]);
+#endif
+}
+
 
 #define IDX_TO_HANDLE(x) (0x13374100 | ((uint8_t)((x)+1)))
 #define HANDLE_TO_IDX(x) ((((x) & 0xffffff00) == 0x13374100 ? ((int)(uint8_t)(x)) : (int)0) - 1)
@@ -795,7 +986,9 @@ int is_fpkg_trap_rip(uint64_t rip)
 {
     return rip == (uint64_t)sceSblServiceCryptAsync_deref_singleton
         || rip == ppr_pfs_plaintext_get_xts_index()
-        || rip == ppr_pfs_plaintext_get_cmac_index();
+        || rip == ppr_pfs_plaintext_get_cmac_index()
+        || rip == ppr_pfs_plaintext_cleanup_keys()
+        || rip == ppr_pfs_plaintext_clear_key_missing();
 }
 
 int try_handle_fpkg_trap(uint64_t* regs)
@@ -817,6 +1010,14 @@ int try_handle_fpkg_trap(uint64_t* regs)
     else if(regs[RIP] == ppr_pfs_plaintext_get_cmac_index())
     {
         try_emulate_plaintext_key_index(regs, 1);
+    }
+    else if(regs[RIP] == ppr_pfs_plaintext_cleanup_keys())
+    {
+        try_prepare_plaintext_key_cleanup(regs);
+    }
+    else if(regs[RIP] == ppr_pfs_plaintext_clear_key_missing())
+    {
+        try_emulate_plaintext_clear_key_missing(regs);
     }
     else
         return 0;
@@ -906,9 +1107,11 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
          * debug exception is unsafe, so protocol v7 snapshots both file ranges
          * before nmount and this trap supplies the same output buffers.
          * registerMountKey indexes a global RB tree by handle alone.  The
-         * emulated result therefore resumes at the exact 9.40 success block
-         * after both key registrations and the pair-tree insertion.  The
-         * sentinels cannot leak into those global tables after a failed mount.
+         * emulated result therefore jumps past both key registrations and the
+         * pair-tree insertion: the sentinels never enter either global table.
+         * A retained-pair counter lets the later unmount trap complete the
+         * matching sceSblPfsClearKey tree miss without touching unrelated
+         * pairs.
          * The kernel-side verify_ppr_sblock_100 continuation still checks the
          * returned read sizes and parses the superblock metadata. Later in the
          * same nmount, exact ppfs_get_{xts,cmac}_index entry traps return the
@@ -1014,8 +1217,9 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
             /*
              * Recreate the two values that the skipped 9.40 wrapper code
              * would have prepared, then continue at loc_953df2dc.  That block
-             * combines the pair and publishes both completed read sizes, but
-             * is after registerMountKey() and the pair RB-tree insertion.
+             * combines the pair and publishes both completed read sizes.  We
+             * enter it after (and deliberately without executing)
+             * registerMountKey() or the pair RB-tree insertion.
              */
             if(copy_u64_to_kernel(regs[RBP] - 0x150,
                                   PPR_PFS_PLAINTEXT_XTS_HANDLE))
@@ -1028,6 +1232,7 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
             if(copy_to_kernel(regs[RDX], &fake_resp, sizeof(fake_resp)))
                 return 0;
             regs[R13] = PPR_PFS_PLAINTEXT_CMAC_HANDLE;
+            retain_ppr_plaintext_key_pair();
             release_ppr_plaintext_staging(latch_td);
             regs[RIP] = lr
                       + PPR_PFS_940_VERIFY_IMAGE_NO_KEY_SUCCESS_FROM_LR;
@@ -1146,9 +1351,9 @@ void handle_fpkg_trap(uint64_t* regs, uint32_t trapno)
     }
 }
 
-void handle_fpkg_syscall(uint64_t* regs, int enable_ppr_plaintext_traps)
+void handle_fpkg_syscall(uint64_t* regs, int is_nmount)
 {
-    uint64_t dbgregs_for_nmount[6] = {
+    uint64_t dbgregs_for_fpkg[6] = {
         (uint64_t)sceSblServiceMailbox, 0, 0, 0,
         0, 0x401
     };
@@ -1158,17 +1363,28 @@ void handle_fpkg_syscall(uint64_t* regs, int enable_ppr_plaintext_traps)
      * explicitly owns an ARMED/ACTIVE PLAINTEXT_NOAUTH session; verifyImage
      * changes ARMED to ACTIVE later during this syscall.
      */
-    enable_ppr_plaintext_traps = enable_ppr_plaintext_traps
-                              && current_ppr_plaintext_session_pending();
+    int enable_ppr_plaintext_traps = is_nmount
+                                  && current_ppr_plaintext_session_pending();
     uint64_t get_xts = enable_ppr_plaintext_traps
                      ? ppr_pfs_plaintext_get_xts_index() : 0;
     uint64_t get_cmac = enable_ppr_plaintext_traps
                       ? ppr_pfs_plaintext_get_cmac_index() : 0;
-    if(get_xts && get_cmac)
+    uint64_t cleanup_keys = ppr_pfs_plaintext_cleanup_keys();
+    uint64_t clear_key_missing = ppr_pfs_plaintext_clear_key_missing();
+    if(get_xts && get_cmac && cleanup_keys)
     {
-        dbgregs_for_nmount[2] = get_xts;
-        dbgregs_for_nmount[3] = get_cmac;
-        dbgregs_for_nmount[5] = 0x451; /* local DR0, DR2, DR3 + reserved bit 10 */
+        dbgregs_for_fpkg[1] = cleanup_keys;
+        dbgregs_for_fpkg[2] = get_xts;
+        dbgregs_for_fpkg[3] = get_cmac;
+        /* A later mount failure can clean the pair inside this same nmount. */
+        dbgregs_for_fpkg[5] = 0x455; /* local DR0..DR3 + reserved bit 10 */
     }
-    start_syscall_with_dbgregs(regs, dbgregs_for_nmount);
+    else if(!is_nmount && cleanup_keys && clear_key_missing
+         && has_ppr_plaintext_key_pair())
+    {
+        dbgregs_for_fpkg[1] = cleanup_keys;
+        dbgregs_for_fpkg[2] = clear_key_missing;
+        dbgregs_for_fpkg[5] = 0x415; /* local DR0..DR2 + reserved bit 10 */
+    }
+    start_syscall_with_dbgregs(regs, dbgregs_for_fpkg);
 }

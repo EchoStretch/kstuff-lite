@@ -160,7 +160,9 @@ The added metrics cover:
   snapshots;
 - CR0 fast-entry/deferred-restore arms, failures, hook-cache use,
   and arm cost;
-- FPU enter/exit, XSAVE/XSAVEC/XRSTOR counts, failures, and cycle cost.
+- FPU enter/exit, XSAVE/XSAVEC/XRSTOR counts, failures, and cycle cost;
+- PLAINTEXT_NOAUTH FE/FF index acquisition and exact transient-context cleanup
+  before `ppfs_put_{cmac,xts}_index` (`PPRCLN01` word-log records).
 
 `ps5-kstuff/debug-reader.c` prints these counters from the shared observation
 area. Metrics are intended for comparison runs; they add measurement overhead

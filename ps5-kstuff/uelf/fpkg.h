@@ -2,7 +2,7 @@
 #include <sys/types.h>
 #include <sys/syscall.h>
 
-void handle_fpkg_syscall(uint64_t* regs, int enable_ppr_plaintext_traps);
+void handle_fpkg_syscall(uint64_t* regs, int is_nmount);
 void handle_fpkg_trap(uint64_t* regs, uint32_t trapno);
 int is_fpkg_trap_rip(uint64_t rip);
 int try_handle_fpkg_trap(uint64_t* regs);
