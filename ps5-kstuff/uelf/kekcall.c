@@ -7,6 +7,7 @@
 #include "traps.h"
 #include "utils.h"
 #include "log.h"
+#include "fpkg.h"
 
 extern char syscall_after[];
 extern char doreti_iret[];
@@ -87,7 +88,18 @@ int handle_kekcall(uint64_t* regs, uint64_t* args, uint32_t nr)
         return ENOSYS;
 #endif
     }
-   else if(nr == 0xffffffff)
+    else if(nr == 7)
+    {
+        uint64_t result = 0;
+        int err = control_ppr_plaintext_request(args[RDI], args[RSI],
+                                                args[RDX], 0,
+                                                args[R8], args[R9],
+                                                &result);
+        if(!err)
+            args[RAX] = result;
+        return err;
+    }
+    else if(nr == 0xffffffff)
     {
         args[RAX] = 0;
         return 0;

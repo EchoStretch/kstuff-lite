@@ -96,14 +96,14 @@ void handle_syscall(uint64_t* regs, int allow_kekcall)
     {
         METRIC_INC(syscall_fpkg_dispatches);
         observe_syscall_armed(KSTUFF_SYSCALL_NMOUNT);
-        handle_fpkg_syscall(regs);
+        handle_fpkg_syscall(regs, 1);
         RETURN_HANDLE_SYSCALL();
     }
     if(IS(unmount))
     {
         METRIC_INC(syscall_fpkg_dispatches);
         observe_syscall_armed(KSTUFF_SYSCALL_UNMOUNT);
-        handle_fpkg_syscall(regs);
+        handle_fpkg_syscall(regs, 0);
         RETURN_HANDLE_SYSCALL();
     }
     if(IS(execve))
@@ -290,7 +290,7 @@ static inline int handle_kernel_trap_fast(uint64_t* regs, uint64_t rip)
 {
     if(rip == (uint64_t)sceSblServiceMailbox)
         return try_handle_mailbox_trap(regs);
-    if(rip == (uint64_t)sceSblServiceCryptAsync_deref_singleton)
+    if(is_fpkg_trap_rip(rip))
     {
         if(try_handle_fpkg_trap(regs))
         {

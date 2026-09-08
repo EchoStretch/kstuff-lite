@@ -361,6 +361,14 @@ static void print_metrics(const struct kstuff_metrics* metrics)
     PRINT_FIELD("clear_emu", metrics->clear_key_emulated);
     tee_putc('\n');
 
+    tee_printf("ppr_plaintext_g6");
+    PRINT_FIELD("traps", metrics->ppr_plaintext_g6_traps);
+    PRINT_FIELD("profile", metrics->ppr_plaintext_profile_matches);
+    PRINT_FIELD("applied", metrics->ppr_plaintext_g6_applied);
+    PRINT_FIELD("bad_initial", metrics->ppr_plaintext_g6_bad_initial_indices);
+    PRINT_FIELD("copy_fail", metrics->ppr_plaintext_g6_copy_failures);
+    tee_putc('\n');
+
     tee_printf("fpkg_rejects");
     PRINT_FIELD("xts_non_fake", metrics->fpkg_reject_xts_non_fake);
     PRINT_FIELD("hmac_non_fake", metrics->fpkg_reject_hmac_non_fake);
