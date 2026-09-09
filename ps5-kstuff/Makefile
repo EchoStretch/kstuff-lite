@@ -3,6 +3,7 @@ PAYLOAD_OPT ?= -O0
 UELF_OPT ?= -O3
 UELF_ARCH ?= -march=znver2 -mtune=znver2
 KSTUFF_OBS ?= 0
+KSTUFF_SELF_ELEVATION ?= 1
 
 ALL_TARGETS := payload.bin
 BUILD_CONFIG := .build-config
@@ -25,6 +26,7 @@ FORCE:
 $(BUILD_CONFIG): FORCE
 	@tmp="$@.tmp"; \
 	printf 'KSTUFF_OBS=%s\n' "$(KSTUFF_OBS)" > "$$tmp"; \
+	printf 'KSTUFF_SELF_ELEVATION=%s\n' "$(KSTUFF_SELF_ELEVATION)" >> "$$tmp"; \
 	printf 'EXTRA_CFLAGS=%s\n' "$(EXTRA_CFLAGS)" >> "$$tmp"; \
 	printf 'PAYLOAD_OPT=%s\n' "$(PAYLOAD_OPT)" >> "$$tmp"; \
 	printf 'UELF_OPT=%s\n' "$(UELF_OPT)" >> "$$tmp"; \
@@ -60,7 +62,7 @@ uelf/crt.o: uelf/crt.asm
 	yasm uelf/crt.asm -f elf64 -o uelf/crt.o
 
 uelf/uelf: uelf/*.c uelf/*.h structs.h uelf/crt.o BearSSL/build/libbearssl.a isa-l_crypto/bin/isa-l_crypto.a $(BUILD_CONFIG)
-	gcc -Wl,-Bsymbolic -Wl,-gc-sections -ffunction-sections -fdata-sections $(UELF_OPT) $(UELF_ARCH) -g -isystem ../freebsd-headers -isystem isa-l_crypto/include -nostdinc -nostdlib -mgeneral-regs-only -fno-stack-protector -fPIE -fPIC -shared -fvisibility=hidden -ffreestanding uelf/crt.o $(EXTRA_CFLAGS) -DKSTUFF_OBS=$(KSTUFF_OBS) uelf/*.c BearSSL/build/libbearssl.a isa-l_crypto/bin/isa-l_crypto.a -o uelf/uelf -Wl,-z,max-page-size=4096
+	gcc -Wl,-Bsymbolic -Wl,-gc-sections -ffunction-sections -fdata-sections $(UELF_OPT) $(UELF_ARCH) -g -isystem ../freebsd-headers -isystem isa-l_crypto/include -nostdinc -nostdlib -mgeneral-regs-only -fno-stack-protector -fPIE -fPIC -shared -fvisibility=hidden -ffreestanding uelf/crt.o $(EXTRA_CFLAGS) -DKSTUFF_OBS=$(KSTUFF_OBS) -DKSTUFF_SELF_ELEVATION=$(KSTUFF_SELF_ELEVATION) uelf/*.c BearSSL/build/libbearssl.a isa-l_crypto/bin/isa-l_crypto.a -o uelf/uelf -Wl,-z,max-page-size=4096
 
 uelf/uelf.bin: uelf/uelf
 	objcopy --strip-all $< $@
