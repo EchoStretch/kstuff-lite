@@ -435,7 +435,43 @@ uint64_t find_empty_pml4_index(int idx)
             return i;
 }
 
-void build_uelf_cr3(uint64_t uelf_cr3, void* uelf_base[2], uint64_t uelf_virt_base, uint64_t dmap_virt_base, uint64_t dmap, uint64_t cr3)
+enum { UELF_SHARED_AREA_OFFSET = 0x1f0000 };
+
+/*
+ * shared_area grew beyond one page when PPR staging was added. Kernel malloc
+ * provides contiguous virtual space, not necessarily contiguous physical
+ * pages, so translating only its first byte and adding offsets can corrupt an
+ * unrelated page. Map every backing page explicitly into each uelf CR3.
+ */
+static void build_uelf_shared_area_mapping(uint64_t pml1_virt,
+                                           uint64_t kernel_address,
+                                           uint64_t user_address,
+                                           uint64_t uelf_virt_base,
+                                           uint64_t dmap,
+                                           uint64_t cr3)
+{
+    if((kernel_address & 4095) || (user_address & 4095)
+    || (SHARED_AREA_SIZE & 4095)
+    || user_address < uelf_virt_base
+    || user_address + SHARED_AREA_SIZE < user_address
+    || user_address + SHARED_AREA_SIZE > uelf_virt_base + 0x200000)
+        die();
+
+    uint64_t pte = (user_address - uelf_virt_base) >> 12;
+    for(uint64_t offset = 0; offset < SHARED_AREA_SIZE; offset += 4096)
+    {
+        uint64_t phys = virt2phys_or_die(kernel_address + offset, 0,
+                                        dmap, cr3);
+        copyin(pml1_virt + 8 * (pte + offset / 4096),
+               &(uint64_t[1]){phys | 7}, 8);
+    }
+}
+
+void build_uelf_cr3(uint64_t uelf_cr3, void* uelf_base[2],
+                    uint64_t uelf_virt_base, uint64_t dmap_virt_base,
+                    uint64_t shared_area_kernel,
+                    uint64_t shared_area_user,
+                    uint64_t dmap, uint64_t cr3)
 {
     enum
     {
@@ -449,7 +485,9 @@ void build_uelf_cr3(uint64_t uelf_cr3, void* uelf_base[2], uint64_t uelf_virt_ba
     static char zeros[4096];
     uint64_t user_start = (uint64_t)uelf_base[0];
     uint64_t user_end = (uint64_t)uelf_base[1];
-    if((uelf_virt_base & 0x1fffff) || (dmap_virt_base & ((1ull << 39) - 1)) || user_end - user_start > 0x200000)
+    if((uelf_virt_base & 0x1fffff)
+    || (dmap_virt_base & ((1ull << 39) - 1))
+    || user_end - user_start > UELF_SHARED_AREA_OFFSET)
         die();
     uint64_t pml4_virt = uelf_cr3;
     copyin(pml4_virt, zeros, 4096);
@@ -466,6 +504,9 @@ void build_uelf_cr3(uint64_t uelf_cr3, void* uelf_base[2], uint64_t uelf_virt_ba
     copyin(pml2_virt + 8 * ((uelf_virt_base >> 21) & 511), &(uint64_t[1]){virt2phys_or_die(pml1_virt, 0, dmap, cr3) | user_page}, 8);
     copyin(pml1_virt, zeros, 4096);
     build_uelf_pml1(pml1_virt, user_start, user_end, dmap, cr3);
+    build_uelf_shared_area_mapping(pml1_virt, shared_area_kernel,
+                                   shared_area_user, uelf_virt_base,
+                                   dmap, cr3);
     for(uint64_t i = 0; i < 512; i++)
         copyin(pml3_dmap+8*i, &(uint64_t[1]){(i<<30) | user_large_page}, 8);
 }
@@ -1096,17 +1137,17 @@ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
     //trying to copyin the whole 64k at once hangs here for some reason
     for(size_t i = 0; i < 256; i++)
         copyin(comparison_table+256*i, comparison_table_data+256*i, 256);
-    uint64_t shared_area;
+    uint64_t shared_area_kernel;
     if(comparison_table - comparison_table_base > SHARED_AREA_SIZE)
-        shared_area = comparison_table - SHARED_AREA_SIZE;
+        shared_area_kernel = comparison_table - SHARED_AREA_SIZE;
     else
-        shared_area = comparison_table + 65536;
-    kmemzero((void*)shared_area, SHARED_AREA_SIZE);
+        shared_area_kernel = comparison_table + 65536;
+    kmemzero((void*)shared_area_kernel, SHARED_AREA_SIZE);
     uint64_t kernel_dmap = get_dmap_base();
     uint64_t kernel_cr3 = r0gdb_read_cr3();
     uint64_t uelf_virt_base = (find_empty_pml4_index(0) << 39) | (-1ull << 48);
     uint64_t dmem_virt_base = (find_empty_pml4_index(1) << 39) | (-1ull << 48);
-    shared_area = virt2phys_or_die(shared_area, 0, kernel_dmap, kernel_cr3) + dmem_virt_base;
+    uint64_t shared_area_user = uelf_virt_base + UELF_SHARED_AREA_OFFSET;
 
     volatile int zero = 0; //hack to force runtime calculation of string pointers
     const char* symbols[] = {
@@ -1143,7 +1184,7 @@ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
         0x1238,                // .ist_noerrc
         0x1239,                // .ist4
         0x1234,                // .pcpu
-        shared_area,           // shared_area
+        shared_area_user,      // shared_area
         0x123a,                // .tss
         0x1235,                // .uelf_cr3
         0x1236,                // .uelf_entry
@@ -1204,7 +1245,9 @@ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
         void* entry = 0;
         void* base[2] = {0};
         char* kelf = load_kelf(kek, symbols, values, base, &entry, 0);
-        build_uelf_cr3(uelf_cr3, uelf_base, uelf_virt_base, dmem_virt_base, kernel_dmap, kernel_cr3);
+        build_uelf_cr3(uelf_cr3, uelf_base, uelf_virt_base, dmem_virt_base,
+                       shared_area_kernel, shared_area_user,
+                       kernel_dmap, kernel_cr3);
         uelf_bases[cpu] = (uintptr_t)uelf;
         kelf_bases[cpu] = (uint64_t)kelf;
         kelf_entries[cpu] = (uint64_t)entry;

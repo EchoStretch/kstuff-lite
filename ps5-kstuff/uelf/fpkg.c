@@ -52,7 +52,6 @@ enum {
     PPR_PFS_SESSION_ACTIVE = 2,
     PPR_PFS_SESSION_STATE_MASK = 3,
     PPR_PFS_SESSION_PAIR_OWNED = 4,
-    PPR_PFS_SESSION_PAIR_INFLIGHT = 8,
     PPR_PLAINTEXT_PROTOCOL_VERSION = 8,
     PPR_FIH_SIZE = 0x1000,
     PPR_SUPERBLOCK_SIZE = 0x5a0,
@@ -402,8 +401,7 @@ static int retain_current_ppr_plaintext_key_pair(uint64_t td)
             if((old & PPR_PFS_SESSION_STATE_MASK) != PPR_PFS_SESSION_ACTIVE
             || (old & PPR_PFS_SESSION_PAIR_OWNED))
                 return 0;
-            uint64_t next = old | PPR_PFS_SESSION_PAIR_OWNED
-                                | PPR_PFS_SESSION_PAIR_INFLIGHT;
+            uint64_t next = old | PPR_PFS_SESSION_PAIR_OWNED;
             if(__atomic_compare_exchange_n(&latch->state, &old, next, 0,
                                            __ATOMIC_ACQ_REL,
                                            __ATOMIC_ACQUIRE))
@@ -416,9 +414,7 @@ static int retain_current_ppr_plaintext_key_pair(uint64_t td)
     return 0;
 }
 
-static int finish_current_ppr_plaintext_key_pair(uint64_t td,
-                                                  int syscall_failed,
-                                                  uint64_t* remaining)
+static int rollback_current_ppr_plaintext_key_pair(uint64_t td)
 {
     for(size_t i = 0; i < SHARED_PPR_PLAINTEXT_LATCH_SLOTS; i++)
     {
@@ -430,25 +426,13 @@ static int finish_current_ppr_plaintext_key_pair(uint64_t td,
         uint64_t old = __atomic_load_n(&latch->state, __ATOMIC_ACQUIRE);
         for(;;)
         {
-            if(!(old & PPR_PFS_SESSION_PAIR_INFLIGHT))
+            if(!(old & PPR_PFS_SESSION_PAIR_OWNED))
                 return 0;
-            uint64_t next = old & ~PPR_PFS_SESSION_PAIR_INFLIGHT;
-            if(syscall_failed)
-                next &= ~PPR_PFS_SESSION_PAIR_OWNED;
+            uint64_t next = old & ~PPR_PFS_SESSION_PAIR_OWNED;
             if(__atomic_compare_exchange_n(&latch->state, &old, next, 0,
                                            __ATOMIC_ACQ_REL,
                                            __ATOMIC_ACQUIRE))
-            {
-                if(!syscall_failed)
-                {
-                    if(remaining)
-                        *remaining = __atomic_load_n(
-                            &shared_area.ppr_plaintext_key_pairs_outstanding,
-                            __ATOMIC_ACQUIRE);
-                    return 1;
-                }
-                return release_ppr_plaintext_key_pair(remaining, NULL);
-            }
+                return release_ppr_plaintext_key_pair(NULL, NULL);
         }
     }
     return 0;
@@ -466,8 +450,7 @@ static void forget_current_ppr_plaintext_key_pair(void)
         if(__atomic_load_n(&latch->td, __ATOMIC_ACQUIRE) == td)
         {
             __atomic_fetch_and(&latch->state,
-                               ~(uint64_t)(PPR_PFS_SESSION_PAIR_OWNED
-                                        | PPR_PFS_SESSION_PAIR_INFLIGHT),
+                               ~(uint64_t)PPR_PFS_SESSION_PAIR_OWNED,
                                __ATOMIC_ACQ_REL);
             return;
         }
@@ -1189,10 +1172,11 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
          * The kernel-side verify_ppr_sblock_100 continuation still checks the
          * returned read sizes and parses the superblock metadata. Later in the
          * same nmount, exact ppfs_get_{xts,cmac}_index entry traps return the
-         * positive sentinel indices ff/fe without allocating nonexistent keys. A53 sees
-         * the retained pair as the private fe/ff request marker and diverts
-         * the request to plaintext IDMA before either index can be used as a
-         * real key.
+         * positive sentinel indices ff/fe without allocating nonexistent keys.
+         * A53 uses the invalid XTS/AES index ff as the private request marker:
+         * signed outer reads also carry CMAC/SHA fe, while an unsigned inner
+         * PFS may omit that SHA key.  The request is diverted to plaintext
+         * IDMA before ff can be used as a real KMB index.
          *
          * The FIH geometry, tweak, NAPS metadata offsets and the superblock
          * remain the bytes from the package.  This is required even without
@@ -1279,8 +1263,7 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
             if(copy_error)
             {
                 if(pair_retained)
-                    (void)finish_current_ppr_plaintext_key_pair(
-                        latch_td, 1, NULL);
+                    (void)rollback_current_ppr_plaintext_key_pair(latch_td);
                 return 0;
             }
 
@@ -1312,8 +1295,7 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
             if(copy_u64_to_kernel(regs[RBP] - 0x150,
                                   PPR_PFS_PLAINTEXT_XTS_HANDLE))
             {
-                (void)finish_current_ppr_plaintext_key_pair(latch_td, 1,
-                                                            NULL);
+                (void)rollback_current_ppr_plaintext_key_pair(latch_td);
                 return 0;
             }
             /*
@@ -1323,8 +1305,7 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
              */
             if(copy_to_kernel(regs[RDX], &fake_resp, sizeof(fake_resp)))
             {
-                (void)finish_current_ppr_plaintext_key_pair(latch_td, 1,
-                                                            NULL);
+                (void)rollback_current_ppr_plaintext_key_pair(latch_td);
                 return 0;
             }
             regs[R13] = PPR_PFS_PLAINTEXT_CMAC_HANDLE;
@@ -1444,34 +1425,6 @@ void handle_fpkg_trap(uint64_t* regs, uint32_t trapno)
         regs[RIP] = tail[4];
         regs[RAX] = 0;
     }
-}
-
-void finish_fpkg_syscall(uint64_t* regs)
-{
-    uint64_t td;
-    if(get_current_ppr_thread(&td))
-        return;
-
-    /* This trap runs immediately after sy_call returns and before syscall_after
-     * translates its integer errno to the userspace CF convention.  Only the
-     * nmount that actually forged a key pair has INFLIGHT set, so other nmount
-     * and unmount completions are no-ops here. */
-    int syscall_failed = (uint32_t)regs[RAX] != 0;
-    uint64_t remaining = 0;
-    int finished = finish_current_ppr_plaintext_key_pair(
-        td, syscall_failed, &remaining);
-#if KSTUFF_OBS
-    if(finished)
-    {
-        log_word(0x50505246494e3031ull); /* "PPRFIN01" */
-        log_word(td);
-        log_word(syscall_failed);
-        log_word(remaining);
-    }
-#else
-    (void)finished;
-    (void)remaining;
-#endif
 }
 
 void handle_fpkg_syscall(uint64_t* regs, int is_nmount)

@@ -458,8 +458,6 @@ from_userspace:
         switch(TRAP_KIND(lr))
         {
         case TRAP_UTILS:
-            if(TRAP_IDX(lr) == 1)
-                finish_fpkg_syscall(regs);
             handle_utils_trap(regs, TRAP_IDX(lr));
             break;
         case TRAP_KEKCALL: handle_kekcall_trap(regs, TRAP_IDX(lr)); break;
