@@ -50,7 +50,10 @@ enum {
     PPR_PFS_MODE_NATIVE_ENCRYPTED = 0x000d,
     PPR_PFS_SESSION_ARMED = 1,
     PPR_PFS_SESSION_ACTIVE = 2,
-    PPR_PLAINTEXT_PROTOCOL_VERSION = 7,
+    PPR_PFS_SESSION_STATE_MASK = 3,
+    PPR_PFS_SESSION_PAIR_OWNED = 4,
+    PPR_PFS_SESSION_PAIR_INFLIGHT = 8,
+    PPR_PLAINTEXT_PROTOCOL_VERSION = 8,
     PPR_FIH_SIZE = 0x1000,
     PPR_SUPERBLOCK_SIZE = 0x5a0,
     PPR_STAGING_SIZE = PPR_FIH_SIZE + PPR_SUPERBLOCK_SIZE,
@@ -103,63 +106,38 @@ static uint64_t ppr_pfs_plaintext_clear_key_missing(void)
          - PPR_PFS_940_CLEAR_KEY_MISSING_BEFORE_MAILBOX;
 }
 
-static uint64_t* ppr_plaintext_index_counter(int cmac)
-{
-    return cmac ? &shared_area.ppr_plaintext_cmac_indices_outstanding
-                : &shared_area.ppr_plaintext_xts_indices_outstanding;
-}
-
 static void retain_ppr_plaintext_key_pair(void)
 {
-    __atomic_fetch_add(ppr_plaintext_index_counter(0), 1, __ATOMIC_RELEASE);
-    __atomic_fetch_add(ppr_plaintext_index_counter(1), 1, __ATOMIC_RELEASE);
-}
-
-static int has_ppr_plaintext_key_index(int cmac)
-{
-    return __atomic_load_n(ppr_plaintext_index_counter(cmac),
-                           __ATOMIC_ACQUIRE) != 0;
+    __atomic_fetch_add(&shared_area.ppr_plaintext_key_pairs_outstanding,
+                       1, __ATOMIC_RELEASE);
 }
 
 static int has_ppr_plaintext_key_pair(void)
 {
-    return has_ppr_plaintext_key_index(0)
-        || has_ppr_plaintext_key_index(1);
+    return __atomic_load_n(
+        &shared_area.ppr_plaintext_key_pairs_outstanding,
+        __ATOMIC_ACQUIRE) != 0;
 }
 
-static int release_ppr_plaintext_key_index(int cmac, uint64_t* remaining)
+static int release_ppr_plaintext_key_pair(uint64_t* xts_remaining,
+                                           uint64_t* cmac_remaining)
 {
-    uint64_t* counter = ppr_plaintext_index_counter(cmac);
-    uint64_t old = __atomic_load_n(
-        counter,
-        __ATOMIC_ACQUIRE);
+    uint64_t* counter = &shared_area.ppr_plaintext_key_pairs_outstanding;
+    uint64_t old = __atomic_load_n(counter, __ATOMIC_ACQUIRE);
     while(old)
     {
-        if(__atomic_compare_exchange_n(
-               counter,
-               &old, old - 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        if(__atomic_compare_exchange_n(counter, &old, old - 1, 0,
+                                       __ATOMIC_ACQ_REL,
+                                       __ATOMIC_ACQUIRE))
         {
-            if(remaining)
-                *remaining = old - 1;
+            if(xts_remaining)
+                *xts_remaining = old - 1;
+            if(cmac_remaining)
+                *cmac_remaining = old - 1;
             return 1;
         }
     }
     return 0;
-}
-
-static int release_ppr_plaintext_key_pair(uint64_t* xts_remaining,
-                                          uint64_t* cmac_remaining)
-{
-    if(!release_ppr_plaintext_key_index(0, xts_remaining))
-        return 0;
-    if(!release_ppr_plaintext_key_index(1, cmac_remaining))
-    {
-        /* Keep both lifetimes paired if an unexpected concurrent clear won. */
-        __atomic_fetch_add(ppr_plaintext_index_counter(0), 1,
-                           __ATOMIC_RELEASE);
-        return 0;
-    }
-    return 1;
 }
 
 static uint64_t ppr_pfs_verify_image_lr(void)
@@ -400,7 +378,94 @@ static int consume_current_ppr_plaintext_latch(uint64_t* consumed_td)
     return 0;
 }
 
-static void clear_current_ppr_plaintext_latch(void)
+static int retain_current_ppr_plaintext_key_pair(uint64_t td)
+{
+    for(size_t i = 0; i < SHARED_PPR_PLAINTEXT_LATCH_SLOTS; i++)
+    {
+        struct kstuff_ppr_plaintext_latch* latch =
+            &shared_area.ppr_plaintext_latches[i];
+        if(__atomic_load_n(&latch->td, __ATOMIC_ACQUIRE) != td)
+            continue;
+
+        uint64_t old = __atomic_load_n(&latch->state, __ATOMIC_ACQUIRE);
+        for(;;)
+        {
+            if((old & PPR_PFS_SESSION_STATE_MASK) != PPR_PFS_SESSION_ACTIVE
+            || (old & PPR_PFS_SESSION_PAIR_OWNED))
+                return 0;
+            uint64_t next = old | PPR_PFS_SESSION_PAIR_OWNED
+                                | PPR_PFS_SESSION_PAIR_INFLIGHT;
+            if(__atomic_compare_exchange_n(&latch->state, &old, next, 0,
+                                           __ATOMIC_ACQ_REL,
+                                           __ATOMIC_ACQUIRE))
+            {
+                retain_ppr_plaintext_key_pair();
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int finish_current_ppr_plaintext_key_pair(uint64_t td,
+                                                  int syscall_failed,
+                                                  uint64_t* remaining)
+{
+    for(size_t i = 0; i < SHARED_PPR_PLAINTEXT_LATCH_SLOTS; i++)
+    {
+        struct kstuff_ppr_plaintext_latch* latch =
+            &shared_area.ppr_plaintext_latches[i];
+        if(__atomic_load_n(&latch->td, __ATOMIC_ACQUIRE) != td)
+            continue;
+
+        uint64_t old = __atomic_load_n(&latch->state, __ATOMIC_ACQUIRE);
+        for(;;)
+        {
+            if(!(old & PPR_PFS_SESSION_PAIR_INFLIGHT))
+                return 0;
+            uint64_t next = old & ~PPR_PFS_SESSION_PAIR_INFLIGHT;
+            if(syscall_failed)
+                next &= ~PPR_PFS_SESSION_PAIR_OWNED;
+            if(__atomic_compare_exchange_n(&latch->state, &old, next, 0,
+                                           __ATOMIC_ACQ_REL,
+                                           __ATOMIC_ACQUIRE))
+            {
+                if(!syscall_failed)
+                {
+                    if(remaining)
+                        *remaining = __atomic_load_n(
+                            &shared_area.ppr_plaintext_key_pairs_outstanding,
+                            __ATOMIC_ACQUIRE);
+                    return 1;
+                }
+                return release_ppr_plaintext_key_pair(remaining, NULL);
+            }
+        }
+    }
+    return 0;
+}
+
+static void forget_current_ppr_plaintext_key_pair(void)
+{
+    uint64_t td;
+    if(get_current_ppr_thread(&td))
+        return;
+    for(size_t i = 0; i < SHARED_PPR_PLAINTEXT_LATCH_SLOTS; i++)
+    {
+        struct kstuff_ppr_plaintext_latch* latch =
+            &shared_area.ppr_plaintext_latches[i];
+        if(__atomic_load_n(&latch->td, __ATOMIC_ACQUIRE) == td)
+        {
+            __atomic_fetch_and(&latch->state,
+                               ~(uint64_t)(PPR_PFS_SESSION_PAIR_OWNED
+                                        | PPR_PFS_SESSION_PAIR_INFLIGHT),
+                               __ATOMIC_ACQ_REL);
+            return;
+        }
+    }
+}
+
+static void clear_current_ppr_plaintext_latch(int mount_failed)
 {
     uint64_t td;
     if(get_current_ppr_thread(&td))
@@ -412,8 +477,10 @@ static void clear_current_ppr_plaintext_latch(void)
         if(__atomic_load_n(&latch->td,
                            __ATOMIC_ACQUIRE) != td)
             continue;
-        __atomic_store_n(&latch->state, 0,
-                         __ATOMIC_RELEASE);
+        uint64_t state = __atomic_exchange_n(&latch->state, 0,
+                                             __ATOMIC_ACQ_REL);
+        if(mount_failed && (state & PPR_PFS_SESSION_PAIR_OWNED))
+            (void)release_ppr_plaintext_key_pair(NULL, NULL);
         __atomic_store_n(&latch->td, 0,
                          __ATOMIC_RELEASE);
     }
@@ -426,7 +493,7 @@ int control_ppr_plaintext_request(uint64_t magic, uint64_t mode,
                                   uint64_t* result)
 {
     /*
-     * "PPRPLAIN", protocol v7. No user pointer is dereferenced: WRITE carries
+     * "PPRPLAIN", protocol v8. No user pointer is dereferenced: WRITE carries
      * 16 snapshot bytes in R8/R9. R10 is deliberately unused because the
      * established kekcall fast snapshot ends at RAX and includes R8/R9.
      */
@@ -440,7 +507,9 @@ int control_ppr_plaintext_request(uint64_t magic, uint64_t mode,
     {
         if(arg0 != PPR_PLAINTEXT_PROTOCOL_VERSION)
             return EINVAL;
-        clear_current_ppr_plaintext_latch();
+        /* R10 is not present in the established kekcall snapshot.  Protocol
+         * v8 carries sceFsMountPprPkg's result in arg2/R8 instead. */
+        clear_current_ppr_plaintext_latch(arg2 != 0);
         return 0;
     }
     if(mode == PPR_CONTROL_BEGIN)
@@ -486,7 +555,7 @@ int control_ppr_plaintext_request(uint64_t magic, uint64_t mode,
     else
         METRIC_INC(ppr_plaintext_profile_matches);
 #if KSTUFF_OBS
-    log_word(0x50505241524d3037ull); /* "PPRARM07" */
+    log_word(0x50505241524d3038ull); /* "PPRARM08" */
     log_word(td);
     log_word(mode);
     log_word(armed);
@@ -509,8 +578,8 @@ static int current_ppr_plaintext_session_active(uint64_t* active_td)
         struct kstuff_ppr_plaintext_latch* latch =
             &shared_area.ppr_plaintext_latches[i];
         if(__atomic_load_n(&latch->td, __ATOMIC_ACQUIRE) == td
-        && __atomic_load_n(&latch->state, __ATOMIC_ACQUIRE)
-                                                == PPR_PFS_SESSION_ACTIVE)
+        && (__atomic_load_n(&latch->state, __ATOMIC_ACQUIRE)
+            & PPR_PFS_SESSION_STATE_MASK) == PPR_PFS_SESSION_ACTIVE)
             return 1;
     }
     return 0;
@@ -528,8 +597,8 @@ static int current_ppr_plaintext_session_pending(void)
         uint64_t state = __atomic_load_n(&latch->state,
                                          __ATOMIC_ACQUIRE);
         if(__atomic_load_n(&latch->td, __ATOMIC_ACQUIRE) == td
-        && (state == PPR_PFS_SESSION_ARMED
-         || state == PPR_PFS_SESSION_ACTIVE))
+        && ((state & PPR_PFS_SESSION_STATE_MASK) == PPR_PFS_SESSION_ARMED
+         || (state & PPR_PFS_SESSION_STATE_MASK) == PPR_PFS_SESSION_ACTIVE))
             return 1;
     }
     return 0;
@@ -585,17 +654,16 @@ static void try_prepare_plaintext_key_cleanup(uint64_t* regs)
 {
     uint64_t cleanup_context = 0;
     uint64_t key_indices = 0;
+#if KSTUFF_OBS
     uint64_t xts_retained = 0;
     uint64_t cmac_retained = 0;
+#endif
     const uint64_t synthetic_indices = 0x000000fe000000ffull;
 
-    /*
-     * The 9.40 entry has a five-byte no-op frame shim followed by a jump to
-     * entry+0x10. Emulate that shim for every hit so an unrelated native
-     * cleanup can continue even while a plaintext mount is outstanding.
-     */
+    /* RF is set by the common kernel-trap path, so leave RIP at the original
+     * entry and let the complete stock prologue execute after this handler.
+     * This keeps unrelated native cleanup byte-for-byte native. */
     canonicalize_debug_gprs(regs);
-    regs[RIP] = ppr_pfs_plaintext_cleanup_keys() + 0x10;
 
     /*
      * a1[271] points at the transient ppfs cleanup context. XTS and CMAC
@@ -603,8 +671,7 @@ static void try_prepare_plaintext_key_cleanup(uint64_t* regs)
      * stock allocator, so convert only the exact FF/FE pair to its normal
      * "not installed" representation before the original cleanup tests it.
      */
-    if(!has_ppr_plaintext_key_index(0)
-    || !has_ppr_plaintext_key_index(1)
+    if(!has_ppr_plaintext_key_pair()
     || (regs[RDI] >> 48) != 0xffff
     || copy_u64_from_kernel(&cleanup_context,
                             regs[RDI] + 271 * sizeof(uint64_t)))
@@ -628,12 +695,12 @@ static void try_prepare_plaintext_key_cleanup(uint64_t* regs)
      * pair was never registered; the exact miss trap is the lifetime end of
      * both synthetic keys.
      */
-    xts_retained = __atomic_load_n(ppr_plaintext_index_counter(0),
-                                   __ATOMIC_ACQUIRE);
-    cmac_retained = __atomic_load_n(ppr_plaintext_index_counter(1),
-                                    __ATOMIC_ACQUIRE);
     observe_current_syscall_emulated();
 #if KSTUFF_OBS
+    xts_retained = __atomic_load_n(
+        &shared_area.ppr_plaintext_key_pairs_outstanding,
+        __ATOMIC_ACQUIRE);
+    cmac_retained = xts_retained;
     log_word(0x505052434c4e3031ull); /* "PPRCLN01" */
     log_word(cleanup_context);
     log_word(key_indices);
@@ -654,23 +721,25 @@ static void try_emulate_plaintext_clear_key_missing(uint64_t* regs)
                      || (regs[R14] == PPR_PFS_PLAINTEXT_XTS_HANDLE
                       && regs[R15] == PPR_PFS_PLAINTEXT_CMAC_HANDLE);
 
-    /*
-     * The trapped instruction is `mov ebx, 0xfffffffe`.  Reproduce it for
-     * every unrelated tree miss.  At this point sceSblPfsClearKey has already
-     * normally built (a1 << 32) | a2 in R13 and still owns its normal
-     * lock/frame.  If the tree root itself is null, the branch arrives before
-     * that construction and the original zero-extended arguments remain in
-     * R14/R15, so accept that equivalent exact shape too.
+    /* At this point sceSblPfsClearKey has normally built (a1 << 32) | a2 in
+     * R13 and still owns its normal lock/frame.  If the tree root itself is
+     * null, the branch arrives before that construction and the original
+     * zero-extended arguments remain in R14/R15, so accept that equivalent
+     * exact shape too.  Unrelated misses execute the trapped stock instruction
+     * through RF without register or RIP emulation.
      */
     if(!expected_args
-    || !has_ppr_plaintext_key_index(0)
-    || !has_ppr_plaintext_key_index(1)
-    || !release_ppr_plaintext_key_pair(&xts_remaining, &cmac_remaining))
+    || !has_ppr_plaintext_key_pair())
     {
-        regs[RBX] = UINT32_MAX - 1u;
-        regs[RIP] = trap + 5;
+        /* RF lets the trapped stock `mov ebx, 0xfffffffe` execute once. */
         return;
     }
+    if(!release_ppr_plaintext_key_pair(&xts_remaining, &cmac_remaining))
+        return;
+    /* An internal rollback unmount can run before the still-active ShellCore
+     * mount wrapper reports failure.  Disown the pair so its final CLEAR does
+     * not release a second, unrelated mount's global count. */
+    forget_current_ppr_plaintext_key_pair();
 
     /*
      * Skip the diagnostic call but retain sceSblPfsClearKey's stock unlock,
@@ -1104,7 +1173,7 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
          * and both completed read sizes. sm_pfs normally uses the vnode/FIH
          * context in request qwords 10/11 to read and fill a 0x1000-byte FIH
          * buffer plus a 0x5a0-byte verified superblock. Calling VFS from the
-         * debug exception is unsafe, so protocol v7 snapshots both file ranges
+         * debug exception is unsafe, so protocol v8 snapshots both file ranges
          * before nmount and this trap supplies the same output buffers.
          * registerMountKey indexes a global RB tree by handle alone.  The
          * emulated result therefore jumps past both key registrations and the
@@ -1152,14 +1221,23 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
             const uint64_t sblock_read_size = 0x5a0;
             struct kstuff_ppr_plaintext_staging* staging =
                 &shared_area.ppr_plaintext_staging;
+#if KSTUFF_OBS
             uint64_t staged_fih_magic = load_u64_unaligned(staging->fih);
             uint64_t staged_sblock_header =
                 load_u64_unaligned(staging->superblock);
+#endif
             int copy_error = ppr_request_malformed ? EINVAL : 0;
+            int pair_retained = 0;
             if(!copy_error
             && (__atomic_load_n(&staging->td, __ATOMIC_ACQUIRE) != latch_td
              || !__atomic_load_n(&staging->ready, __ATOMIC_ACQUIRE)))
                 copy_error = EPERM;
+            if(!copy_error)
+            {
+                pair_retained = retain_current_ppr_plaintext_key_pair(latch_td);
+                if(!pair_retained)
+                    copy_error = EBUSY;
+            }
             if(!copy_error)
                 copy_error = zero_kernel_checked(regs[R13], fih_read_size);
             if(!copy_error)
@@ -1194,7 +1272,12 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
             log_word(staged_sblock_header);
 #endif
             if(copy_error)
+            {
+                if(pair_retained)
+                    (void)finish_current_ppr_plaintext_key_pair(
+                        latch_td, 1, NULL);
                 return 0;
+            }
 
             struct
             {
@@ -1223,16 +1306,23 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
              */
             if(copy_u64_to_kernel(regs[RBP] - 0x150,
                                   PPR_PFS_PLAINTEXT_XTS_HANDLE))
+            {
+                (void)finish_current_ppr_plaintext_key_pair(latch_td, 1,
+                                                            NULL);
                 return 0;
+            }
             /*
              * Publish the mailbox response last.  If the stack-local write
              * fails, the stock secure-module call can still run without
              * observing a partially forged response header.
              */
             if(copy_to_kernel(regs[RDX], &fake_resp, sizeof(fake_resp)))
+            {
+                (void)finish_current_ppr_plaintext_key_pair(latch_td, 1,
+                                                            NULL);
                 return 0;
+            }
             regs[R13] = PPR_PFS_PLAINTEXT_CMAC_HANDLE;
-            retain_ppr_plaintext_key_pair();
             release_ppr_plaintext_staging(latch_td);
             regs[RIP] = lr
                       + PPR_PFS_940_VERIFY_IMAGE_NO_KEY_SUCCESS_FROM_LR;
@@ -1349,6 +1439,34 @@ void handle_fpkg_trap(uint64_t* regs, uint32_t trapno)
         regs[RIP] = tail[4];
         regs[RAX] = 0;
     }
+}
+
+void finish_fpkg_syscall(uint64_t* regs)
+{
+    uint64_t td;
+    if(get_current_ppr_thread(&td))
+        return;
+
+    /* This trap runs immediately after sy_call returns and before syscall_after
+     * translates its integer errno to the userspace CF convention.  Only the
+     * nmount that actually forged a key pair has INFLIGHT set, so other nmount
+     * and unmount completions are no-ops here. */
+    int syscall_failed = (uint32_t)regs[RAX] != 0;
+    uint64_t remaining = 0;
+    int finished = finish_current_ppr_plaintext_key_pair(
+        td, syscall_failed, &remaining);
+#if KSTUFF_OBS
+    if(finished)
+    {
+        log_word(0x50505246494e3031ull); /* "PPRFIN01" */
+        log_word(td);
+        log_word(syscall_failed);
+        log_word(remaining);
+    }
+#else
+    (void)finished;
+    (void)remaining;
+#endif
 }
 
 void handle_fpkg_syscall(uint64_t* regs, int is_nmount)

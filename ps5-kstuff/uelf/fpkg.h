@@ -3,6 +3,7 @@
 #include <sys/syscall.h>
 
 void handle_fpkg_syscall(uint64_t* regs, int is_nmount);
+void finish_fpkg_syscall(uint64_t* regs);
 void handle_fpkg_trap(uint64_t* regs, uint32_t trapno);
 int is_fpkg_trap_rip(uint64_t rip);
 int try_handle_fpkg_trap(uint64_t* regs);

@@ -403,6 +403,27 @@ int phys_copyin(uint64_t vaddr, const void* src, uint64_t sz, uint64_t dmap, uin
     return 0;
 }
 
+static int phys_copyout(void* dst, uint64_t vaddr, uint64_t sz,
+                        uint64_t dmap, uint64_t pml)
+{
+    char* p_dst = dst;
+    uint64_t phys, phys_end;
+    while(sz)
+    {
+        phys = virt2phys(vaddr, &phys_end, dmap, pml);
+        if(phys == -1)
+            return -1;
+        size_t chk = phys_end - phys;
+        if(sz < chk)
+            chk = sz;
+        copyout(p_dst, dmap + phys, chk);
+        vaddr += chk;
+        p_dst += chk;
+        sz -= chk;
+    }
+    return 0;
+}
+
 uint64_t find_empty_pml4_index(int idx)
 {
     uint64_t dmap = get_dmap_base();
@@ -652,6 +673,197 @@ static enum kit_type get_kit_type(void) {
     return KIT_RETAIL;
 }
 
+extern const unsigned char ppr_mount_940_blob_start[];
+extern const unsigned char ppr_mount_940_blob_end[];
+
+enum {
+    SHELLCORE_940_PPR_CALL_OFFSET = 0x748D0D,
+    SHELLCORE_940_PPR_CAVE_OFFSET = 0x17DEB50,
+    SHELLCORE_940_PPR_CAVE_SIZE = 0x4B0,
+    SHELLCORE_940_OPEN_PLT_OFFSET = 0x17D6F00,
+    LIBKERNEL_SYS_940_OPEN_OFFSET = 0xF290,
+    LIBKERNEL_SYS_940_GETPID_OFFSET = 0x5B0,
+};
+
+#define SHELLCORE_PPR_SYSCALL_PLACEHOLDER 0x4C43535953525050ull
+
+static const char* shellcore_patch_failure;
+
+static int shellcore_ppr_fail(const char* reason)
+{
+    shellcore_patch_failure = reason;
+    return -1;
+}
+
+static int bytes_equal(const unsigned char* a, const unsigned char* b,
+                       size_t size)
+{
+    for(size_t i = 0; i < size; i++)
+        if(a[i] != b[i])
+            return 0;
+    return 1;
+}
+
+static int install_shellcore_ppr_hook_940(int pid, uint64_t shellcore_base,
+                                           uint64_t dmap, uint64_t cr3)
+{
+    static const unsigned char expected_call[5] = {
+        0xE8, 0xCE, 0x05, 0x09, 0x01
+    };
+    const size_t blob_size = (size_t)(ppr_mount_940_blob_end
+                                    - ppr_mount_940_blob_start);
+    unsigned char prepared_blob[SHELLCORE_940_PPR_CAVE_SIZE];
+    unsigned char current_call[sizeof(expected_call)];
+    unsigned char call_patch[sizeof(expected_call)] = {0xE8};
+    unsigned char chunk[64];
+    int cave_is_zero = 1;
+    int cave_is_blob = 1;
+
+    if(!blob_size || blob_size > SHELLCORE_940_PPR_CAVE_SIZE)
+        return shellcore_ppr_fail("PPR hook: invalid blob size");
+
+    static const unsigned char expected_open_plt[] = {
+        0xFF, 0x25, 0x1A, 0x04, 0x6A, 0x00
+    };
+    if(phys_copyout(chunk,
+                    shellcore_base + SHELLCORE_940_OPEN_PLT_OFFSET,
+                    sizeof(expected_open_plt), dmap, cr3)
+    || !bytes_equal(chunk, expected_open_plt, sizeof(expected_open_plt)))
+        return shellcore_ppr_fail("PPR hook: open PLT mismatch");
+
+    int32_t open_got_displacement;
+    memcpy(&open_got_displacement, expected_open_plt + 2,
+           sizeof(open_got_displacement));
+    uint64_t open_got = shellcore_base + SHELLCORE_940_OPEN_PLT_OFFSET
+                      + sizeof(expected_open_plt) + open_got_displacement;
+    uint64_t open_address;
+    if(phys_copyout(&open_address, open_got, sizeof(open_address), dmap, cr3)
+    || open_address < LIBKERNEL_SYS_940_OPEN_OFFSET)
+        return shellcore_ppr_fail("PPR hook: open GOT read failed");
+    uint64_t libkernel_sys_base = open_address
+                                - LIBKERNEL_SYS_940_OPEN_OFFSET;
+    if(libkernel_sys_base + LIBKERNEL_SYS_940_GETPID_OFFSET
+       < libkernel_sys_base)
+        return shellcore_ppr_fail("PPR hook: libkernel address overflow");
+    uint64_t getpid_address = libkernel_sys_base
+                            + LIBKERNEL_SYS_940_GETPID_OFFSET;
+    uint64_t syscall_target = getpid_address + 7;
+    if(syscall_target < getpid_address)
+        return shellcore_ppr_fail("PPR hook: syscall address overflow");
+
+    static const unsigned char expected_syscall_target[] = {
+        0x49, 0x89, 0xCA, 0x0F, 0x05, 0x72, 0x01, 0xC3
+    };
+    if(remote_syscall(pid, SYS_mlock, syscall_target,
+                      (uint64_t)sizeof(expected_syscall_target), 0, 0, 0, 0)
+    || phys_copyout(chunk, syscall_target, sizeof(expected_syscall_target),
+                    dmap, cr3)
+    || !bytes_equal(chunk, expected_syscall_target,
+                    sizeof(expected_syscall_target)))
+        return shellcore_ppr_fail("PPR hook: syscall trampoline mismatch");
+
+    memcpy(prepared_blob, ppr_mount_940_blob_start, blob_size);
+    size_t syscall_placeholder_count = 0;
+    for(size_t offset = 0; offset + sizeof(uint64_t) <= blob_size; offset++)
+    {
+        uint64_t value;
+        memcpy(&value, prepared_blob + offset, sizeof(value));
+        if(value != SHELLCORE_PPR_SYSCALL_PLACEHOLDER)
+            continue;
+        memcpy(prepared_blob + offset, &syscall_target,
+               sizeof(syscall_target));
+        syscall_placeholder_count++;
+    }
+    if(syscall_placeholder_count != 1)
+        return shellcore_ppr_fail("PPR hook: syscall placeholder mismatch");
+
+    int32_t displacement = SHELLCORE_940_PPR_CAVE_OFFSET
+                         - (SHELLCORE_940_PPR_CALL_OFFSET + 5);
+    memcpy(call_patch + 1, &displacement, sizeof(displacement));
+
+    /* This also proves that the page-rounded tail beyond p_memsz is present
+     * in the live ShellCore vm_map before any bytes are changed. */
+    if(remote_syscall(pid, SYS_mlock,
+                      shellcore_base + SHELLCORE_940_PPR_CAVE_OFFSET,
+                      SHELLCORE_940_PPR_CAVE_SIZE, 0, 0, 0, 0))
+        return shellcore_ppr_fail("PPR hook: cave mlock failed");
+
+    if(phys_copyout(current_call,
+                    shellcore_base + SHELLCORE_940_PPR_CALL_OFFSET,
+                    sizeof(current_call), dmap, cr3))
+        return shellcore_ppr_fail("PPR hook: call-site read failed");
+    int call_is_original = bytes_equal(current_call, expected_call,
+                                       sizeof(expected_call));
+    int call_is_hook = bytes_equal(current_call, call_patch,
+                                   sizeof(call_patch));
+    if(!call_is_original && !call_is_hook)
+        return shellcore_ppr_fail("PPR hook: call-site mismatch");
+
+    /* Accept either an untouched cave or this exact blob followed by zeros.
+     * The latter makes reloads and recovery after an interrupted install
+     * idempotent without accepting another resident patch. */
+    for(size_t offset = 0; offset < SHELLCORE_940_PPR_CAVE_SIZE;
+        offset += sizeof(chunk))
+    {
+        size_t size = SHELLCORE_940_PPR_CAVE_SIZE - offset;
+        if(size > sizeof(chunk))
+            size = sizeof(chunk);
+        if(phys_copyout(chunk,
+                        shellcore_base + SHELLCORE_940_PPR_CAVE_OFFSET + offset,
+                        size, dmap, cr3))
+            return shellcore_ppr_fail("PPR hook: cave read failed");
+        for(size_t i = 0; i < size; i++)
+        {
+            if(chunk[i])
+                cave_is_zero = 0;
+            unsigned char expected = offset + i < blob_size
+                                   ? prepared_blob[offset + i]
+                                   : 0;
+            if(chunk[i] != expected)
+                cave_is_blob = 0;
+        }
+    }
+
+    if(call_is_hook)
+        return cave_is_blob ? 0
+             : shellcore_ppr_fail("PPR hook: resident blob mismatch");
+    if(!cave_is_zero && !cave_is_blob)
+        return shellcore_ppr_fail("PPR hook: cave is occupied");
+
+    if(cave_is_zero)
+    {
+        if(phys_copyin(shellcore_base + SHELLCORE_940_PPR_CAVE_OFFSET,
+                       prepared_blob, blob_size, dmap, cr3))
+            return shellcore_ppr_fail("PPR hook: cave write failed");
+
+        /* Verify the resident blob before making it reachable. */
+        for(size_t offset = 0; offset < blob_size; offset += sizeof(chunk))
+        {
+            size_t size = blob_size - offset;
+            if(size > sizeof(chunk))
+                size = sizeof(chunk);
+            if(phys_copyout(
+                    chunk,
+                    shellcore_base + SHELLCORE_940_PPR_CAVE_OFFSET + offset,
+                    size, dmap, cr3)
+            || !bytes_equal(chunk, prepared_blob + offset, size))
+                return shellcore_ppr_fail("PPR hook: cave verify failed");
+        }
+    }
+
+    /* call 0x17DEB50 from 0x748D0D; install this redirection last. */
+    if(phys_copyin(shellcore_base + SHELLCORE_940_PPR_CALL_OFFSET,
+                   call_patch, sizeof(call_patch), dmap, cr3))
+        return shellcore_ppr_fail("PPR hook: call-site write failed");
+
+    if(phys_copyout(current_call,
+                    shellcore_base + SHELLCORE_940_PPR_CALL_OFFSET,
+                    sizeof(current_call), dmap, cr3)
+    || !bytes_equal(current_call, call_patch, sizeof(call_patch)))
+        return shellcore_ppr_fail("PPR hook: call-site verify failed");
+    return 0;
+}
+
 static const struct shellcore_patch* get_shellcore_patches(size_t* n_patches)
 {
 enum kit_type kit = get_kit_type();
@@ -738,6 +950,7 @@ enum kit_type kit = get_kit_type();
 
 static int patch_shellcore(const struct shellcore_patch* patches, size_t n_patches, uint64_t eh_frame_offset)
 {
+    shellcore_patch_failure = 0;
     int pid = find_proc("SceShellCore");
     struct module_info_ex mod_info;
     mod_info.st_size = sizeof(mod_info);
@@ -756,6 +969,10 @@ static int patch_shellcore(const struct shellcore_patch* patches, size_t n_patch
         if(phys_copyin(shellcore_base + patches[i].offset, patches[i].data, patches[i].sz, dmap, cr3))
             return -1;
     }
+    if((r0gdb_get_fw_version() >> 16) == 0x940
+    && get_kit_type() == KIT_RETAIL
+    && install_shellcore_ppr_hook_940(pid, shellcore_base, dmap, cr3))
+        return -1;
     return 0;
 }
 
@@ -1151,7 +1368,8 @@ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
                             n_shellcore_patches,
                             shellcore_eh_frame_offset))
         {
-            notify("failed to patch shellcore");
+            notify(shellcore_patch_failure ? shellcore_patch_failure
+                                           : "failed to patch shellcore");
         }
     }
 
@@ -1163,7 +1381,7 @@ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
                                "Retail";
 
     char msg[128];
-    snprintf(msg, sizeof(msg), "Welcome To Kstuff Lite 1.11-test5-dr\nPlayStation 5 FW: %x.%02x (%s)\nBy sleirsgoevy",
+    snprintf(msg, sizeof(msg), "Welcome To Kstuff Lite 1.12-fpkg-dr-t1\nPlayStation 5 FW: %x.%02x (%s)\nBy sleirsgoevy",
              fwver >> 8, fwver & 0xFF, console_type);
     notify(msg);
 	

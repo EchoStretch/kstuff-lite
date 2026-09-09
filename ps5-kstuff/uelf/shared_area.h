@@ -411,8 +411,11 @@ struct shared_area_layout
     /* Synthetic FE/FF indices identify retained FD/FC handles.  They survive
      * cleanup_a53io_pkg_keys and end at the matching sceSblPfsClearKey pair
      * tree-miss in a later unmount syscall. */
-    uint64_t ppr_plaintext_xts_indices_outstanding;
-    uint64_t ppr_plaintext_cmac_indices_outstanding;
+    /* XTS and CMAC are created and destroyed as one synthetic pair.  Keep a
+     * single lifetime counter so an interrupted path cannot leave the two
+     * halves permanently out of sync. */
+    uint64_t ppr_plaintext_key_pairs_outstanding;
+    uint64_t ppr_plaintext_key_pairs_reserved;
 #if KSTUFF_OBS
     struct kstuff_metrics metrics;
     struct kstuff_word_log word_log;
