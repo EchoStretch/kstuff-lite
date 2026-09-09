@@ -182,6 +182,15 @@ static int zero_kernel_checked(uint64_t dst, uint64_t size)
     return 0;
 }
 
+static int is_kernel_range(uint64_t address, uint64_t size)
+{
+    if(!size || (address >> 48) != 0xffff)
+        return 0;
+    if(address > UINT64_MAX - (size - 1))
+        return 0;
+    return ((address + size - 1) >> 48) == 0xffff;
+}
+
 static uint16_t load_u16_unaligned(const uint8_t* p)
 {
     uint16_t value;
@@ -1117,9 +1126,7 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
 
         uint64_t fih_read_size = 0;
         uint64_t sblock_input_size = 0;
-        uint64_t output_request_size = 0;
-        uint64_t output_capacity = 0;
-        int ppr_request_malformed = 0;
+        uint64_t ppr_request_malformed = 0;
         int ppr_plaintext_pending = is_ppr_verify_image
                                   && current_ppr_plaintext_session_pending();
         if(ppr_plaintext_pending)
@@ -1127,25 +1134,23 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
             /* req[9] is { FIH output size, superblock output capacity }. */
             fih_read_size = (uint32_t)req[9];
             sblock_input_size = req[9] >> 32;
-            int output_size_error = copy_u64_from_kernel(
-                                        &output_request_size,
-                                        regs[RBP] - 0x160);
-            if(!output_size_error
-            && output_request_size <= UINT64_MAX - 0x3fff)
-                output_capacity = (output_request_size + 0x3fff)
-                                & ~0x3fffull;
-            else
-                output_size_error = EINVAL;
-            ppr_request_malformed = output_size_error
-                                 || (regs[R13] >> 48) != 0xffff
-                                 || (regs[R14] >> 48) != 0xffff
-                                 || (regs[R15] >> 48) != 0xffff
-                                 || fih_read_size != PPR_FIH_SIZE
-                                 || sblock_input_size != 0x3000
-                                 || !output_request_size
-                                 || output_request_size > 0x20000
-                                 || output_capacity < fih_read_size
-                                 || output_capacity > 0x20000;
+            /*
+             * At this call site [rbp-0x160] is the wrapper's fourth
+             * argument, not an output-buffer size.  Its value is allowed to
+             * vary between callers and must not be used to validate the
+             * mailbox request.  The request itself gives the two exact
+             * extents in req[9]; validate those and every range we write.
+             */
+            if(!is_kernel_range(regs[R13], PPR_FIH_SIZE))
+                ppr_request_malformed |= 1ull << 0;
+            if(!is_kernel_range(regs[R14], 0x3000))
+                ppr_request_malformed |= 1ull << 1;
+            if(!is_kernel_range(regs[R15], PPR_FIH_SIZE))
+                ppr_request_malformed |= 1ull << 2;
+            if(fih_read_size != PPR_FIH_SIZE)
+                ppr_request_malformed |= 1ull << 3;
+            if(sblock_input_size != 0x3000)
+                ppr_request_malformed |= 1ull << 4;
         }
         uint64_t latch_td = 0;
         int ppr_plaintext_latched = ppr_plaintext_pending
@@ -1155,7 +1160,7 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
 #if KSTUFF_OBS
         if(is_ppr_verify_image)
         {
-            log_word(0x5050524d42583331ull); /* "PPRMBX31" */
+            log_word(0x5050524d42583332ull); /* "PPRMBX32" */
             log_word(lr);
             log_word(ppr_verify_image_lr);
             log_word(latch_td);
@@ -1261,12 +1266,12 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
             if(!copy_error)
                 copy_error = zero_kernel_checked(regs[R15], fih_read_size);
 #if KSTUFF_OBS
-            log_word(0x50505256494d4736ull); /* "PPRVIM6" */
+            log_word(0x50505256494d4737ull); /* "PPRVIM7" */
             log_word(regs[R13]);             /* FIH output */
             log_word(regs[R14]);             /* superblock output */
             log_word(regs[R15]);             /* ICV-keep output */
             log_word(req[9]);
-            log_word((output_request_size << 32) | output_capacity);
+            log_word(ppr_request_malformed);
             log_word(copy_error);
             log_word(staged_fih_magic);
             log_word(staged_sblock_header);
