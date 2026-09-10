@@ -58,7 +58,7 @@ structs.h: structs.inc
 
 shellcore_hook/ppr_mount_940.bin: shellcore_hook/ppr_mount_940.asm
 	yasm -f bin $< -o $@
-	@test $$(wc -c < $@) -le $$((0x670)) || (echo "ppr_mount_940.bin exceeds the smallest supported ShellCore cave"; rm -f $@; false)
+	@test $$(wc -c < $@) -le $$((0x300)) || (echo "ppr_mount_940.bin exceeds the reserved kstuff cave prefix"; rm -f $@; false)
 
 shellcore_hook/ppr_mount_940_blob.o: shellcore_hook/ppr_mount_940_blob.asm shellcore_hook/ppr_mount_940.bin
 	yasm -f elf64 $< -o $@

@@ -785,7 +785,7 @@ extern const unsigned char ppr_mount_940_blob_end[];
 #define SHELLCORE_PPR_OPEN_PLACEHOLDER    0x4E45504Fu
 #define SHELLCORE_PPR_PREAD_PLACEHOLDER   0x44414552u
 #define SHELLCORE_PPR_MOUNT_PLACEHOLDER   0x544E554Du
-#define SHELLCORE_PPR_BLOB_MAX_SIZE       0x1000
+#define SHELLCORE_PPR_RESERVED_SIZE       0x300
 
 static const char* shellcore_patch_failure;
 
@@ -840,7 +840,7 @@ static int install_shellcore_ppr_hook(
     const uint64_t call_offset = sc->ppr_call;
     const uint64_t cave_offset = sc->ppr_cave;
     const uint64_t cave_size = sc->ppr_cave_size;
-    unsigned char prepared_blob[SHELLCORE_PPR_BLOB_MAX_SIZE];
+    unsigned char prepared_blob[SHELLCORE_PPR_RESERVED_SIZE];
     unsigned char expected_call[5] = {0xe8};
     unsigned char current_call[sizeof(expected_call)];
     unsigned char call_patch[sizeof(expected_call)] = {0xe8};
@@ -853,7 +853,7 @@ static int install_shellcore_ppr_hook(
     || !sc->mount_ppr_pkg_plt || !sc->getpid_plt)
         return shellcore_ppr_fail("PPR hook: missing ShellCore offsets");
     if(!blob_size || blob_size > sizeof(prepared_blob)
-    || blob_size > cave_size)
+    || cave_size < SHELLCORE_PPR_RESERVED_SIZE)
         return shellcore_ppr_fail("PPR hook: invalid blob size");
 
     unsigned char getpid_plt[6];
@@ -950,13 +950,12 @@ static int install_shellcore_ppr_hook(
     if(!call_is_original && !call_is_hook)
         return shellcore_ppr_fail("PPR hook: call-site mismatch");
 
-    /* Accept either an untouched cave or this exact blob followed by zeros.
-     * The latter makes reloads and recovery after an interrupted install
-     * idempotent without accepting another resident patch. */
-    for(size_t offset = 0; offset < cave_size;
+    /* Own only the fixed prefix. ShadowMount may use the remaining executable
+     * tail, so reload validation must deliberately ignore it. */
+    for(size_t offset = 0; offset < SHELLCORE_PPR_RESERVED_SIZE;
         offset += sizeof(chunk))
     {
-        size_t size = cave_size - offset;
+        size_t size = SHELLCORE_PPR_RESERVED_SIZE - offset;
         if(size > sizeof(chunk))
             size = sizeof(chunk);
         if(phys_copyout(chunk,
