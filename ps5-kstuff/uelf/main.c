@@ -85,7 +85,9 @@ void handle_syscall(uint64_t* regs, int allow_kekcall)
     }
 #ifndef FREEBSD
     if(IS(mprotect)
-         || IS_PPR(mdbg_call))
+    && !runtime_syscall_hook_enabled(KSTUFF_RUNTIME_HOOK_MPROTECT))
+        RETURN_HANDLE_SYSCALL();
+    if(IS(mprotect) || IS_PPR(mdbg_call))
     {
         METRIC_INC(syscall_fix_dispatches);
         observe_syscall_armed(IS(mprotect) ? KSTUFF_SYSCALL_MPROTECT : KSTUFF_SYSCALL_MDBG_CALL);
@@ -94,6 +96,8 @@ void handle_syscall(uint64_t* regs, int allow_kekcall)
     }
     if(IS(nmount))
     {
+        if(!runtime_syscall_hook_enabled(KSTUFF_RUNTIME_HOOK_NMOUNT))
+            RETURN_HANDLE_SYSCALL();
         METRIC_INC(syscall_fpkg_dispatches);
         observe_syscall_armed(KSTUFF_SYSCALL_NMOUNT);
         handle_fpkg_syscall(regs, 1);
@@ -101,6 +105,8 @@ void handle_syscall(uint64_t* regs, int allow_kekcall)
     }
     if(IS(unmount))
     {
+        if(!runtime_syscall_hook_enabled(KSTUFF_RUNTIME_HOOK_UNMOUNT))
+            RETURN_HANDLE_SYSCALL();
         METRIC_INC(syscall_fpkg_dispatches);
         observe_syscall_armed(KSTUFF_SYSCALL_UNMOUNT);
         handle_fpkg_syscall(regs, 0);

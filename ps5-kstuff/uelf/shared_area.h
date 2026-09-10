@@ -403,7 +403,10 @@ struct shared_area_layout
 {
     uint64_t bitmask;
     uint64_t ready_mask;
-    char pad[16];
+    /* Disabled-bit representation preserves the historical all-enabled
+     * behavior after the shared area is zero-initialized. */
+    uint64_t runtime_syscall_hook_disable_mask;
+    char pad[8];
     uint8_t key_data[SHARED_FAKE_KEY_SLOTS][32];
     struct kstuff_ppr_plaintext_latch
         ppr_plaintext_latches[SHARED_PPR_PLAINTEXT_LATCH_SLOTS];
