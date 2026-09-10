@@ -248,13 +248,22 @@ void* load_kelf(void* ehdr, const char** symbols, uint64_t* values, void** base,
             uint64_t value = sym[1];
             if(!value)
             {
+                int found = 0;
                 for(size_t i = 0; symbols[i]; i++)
                     if(!strcmp(symbols[i], name))
+                    {
                         sym[1] = value = values[i];
+                        found = 1;
+                        break;
+                    }
                     else if(symbols[i][0] == '.' && !strcmp(symbols[i]+1, name))
+                    {
                         value = values[i];
+                        found = 1;
+                        break;
+                    }
 #ifndef FIRMWARE_PORTING
-                if(!value)
+                if(!found)
                     die();
 #endif
             }
@@ -375,7 +384,9 @@ int get_proc_cr3(uint64_t pid, uint64_t* cr3, uint64_t* dmap_base)
      * into the offset table) if it is neither 0x2e0 nor 0x2e8.
      */
     uint32_t fwver = r0gdb_get_fw_version() >> 16;
-    uint32_t vmspace_pmap_offset = (fwver >= 0x600) ? 0x2E8 : 0x2E0;
+    uint32_t vmspace_pmap_offset = fwver <= 0x102 ? 0x2C0
+                                  : fwver >= 0x600 ? 0x2E8
+                                  : 0x2E0;
     uint64_t ptrs[2] = {0};
     copyout(ptrs, vmspace + vmspace_pmap_offset + 32, sizeof(ptrs));
     if (cr3) *cr3 = ptrs[1];
@@ -603,7 +614,18 @@ struct shellcore_fpkg_offsets
  * to the module image; verify original bytes and the retail/testkit/devkit
  * variants before enabling the firmware.
  */
+#include "shellcore_patches/1_00.h"
+#include "shellcore_patches/1_01.h"
+#include "shellcore_patches/1_02.h"
+#include "shellcore_patches/1_12.h"
+#include "shellcore_patches/1_14.h"
+#include "shellcore_patches/2_00.h"
+#include "shellcore_patches/2_20.h"
+#include "shellcore_patches/2_25.h"
+#include "shellcore_patches/2_26.h"
+#include "shellcore_patches/2_30.h"
 #include "shellcore_patches/2_50.h"
+#include "shellcore_patches/2_70.h"
 #include "shellcore_patches/3_00.h"
 #include "shellcore_patches/3_10.h"
 #include "shellcore_patches/3_20.h"
@@ -657,7 +679,18 @@ static const struct shellcore_fpkg_offsets* get_shellcore_fpkg_offsets(void)
     {
 #define SHELLCORE_FPKG_FW(x) \
         case 0x ## x: return &shellcore_fpkg_offsets_ ## x
+    SHELLCORE_FPKG_FW(100);
+    SHELLCORE_FPKG_FW(101);
+    SHELLCORE_FPKG_FW(102);
+    SHELLCORE_FPKG_FW(112);
+    SHELLCORE_FPKG_FW(114);
+    SHELLCORE_FPKG_FW(200);
+    SHELLCORE_FPKG_FW(220);
+    SHELLCORE_FPKG_FW(225);
+    SHELLCORE_FPKG_FW(226);
+    SHELLCORE_FPKG_FW(230);
     SHELLCORE_FPKG_FW(250);
+    SHELLCORE_FPKG_FW(270);
     SHELLCORE_FPKG_FW(300);
     SHELLCORE_FPKG_FW(310);
     SHELLCORE_FPKG_FW(320);
@@ -1041,7 +1074,18 @@ enum kit_type kit = get_kit_type();
     switch(ver)
     {
     /* TODO(FW_PORT): add FW(<version>) after including its verified table. */
+    FW(100);
+    FW(101);
+    FW(102);
+    FW(112);
+    FW(114);
+    FW(200);
+    FW(220);
+    FW(225);
+    FW(226);
+    FW(230);
     FW(250);
+    FW(270);
     FW(300);
     FW(310);
     FW(320);
@@ -1217,11 +1261,25 @@ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
     gdb_remote_syscall("write", 3, 0, (uintptr_t)1, (uintptr_t)"allocating kernel memory... ", (uintptr_t)28);
 
 #ifdef USE_INT3_SYSCALL_HOOK
-    // this jmp to int3 exists because sony fills certain functions with int3 depending on the console type
-    // retails have the most of these redacted functions, testkits less, devkits even less, presumably "DevKit Intdev" has none
-    // the built in offsets are mostly from retail firmwares so for kits we need to find them again
+    // 2.xx and later use a CFI-table thunk which jumps to an INT3-filled
+    // function.  1.xx dispatches sy_call directly, so its verified retail
+    // table points at the raw INT3 byte instead and must not use the CFI finder.
+    uint32_t syscall_hook_fwver = r0gdb_get_fw_version() >> 16;
     int is_kit = sceKernelIsTestKit() || sceKernelIsDevKit();
-    if (offsets.syscall_cfi_table_jmp_int3 == kdata_base || is_kit) {
+    if (syscall_hook_fwver < 0x200) {
+        if (is_kit) {
+            notify("1.xx test/dev kit syscall hook is not supported");
+            r0gdb_cleanup();
+            return 1;
+        }
+        if (offsets.syscall_cfi_table_jmp_int3 == kdata_base
+         || kread8(offsets.syscall_cfi_table_jmp_int3) != 0xcc) {
+            notify("1.xx raw INT3 syscall target is unavailable on this kernel");
+            r0gdb_cleanup();
+            return 1;
+        }
+    }
+    else if (offsets.syscall_cfi_table_jmp_int3 == kdata_base || is_kit) {
         offsets.syscall_cfi_table_jmp_int3 = r0gdb_find_syscall_cfi_table_jmp_int3_addr();
         if (offsets.syscall_cfi_table_jmp_int3 == 0 || offsets.syscall_cfi_table_jmp_int3 == kdata_base)
             die();

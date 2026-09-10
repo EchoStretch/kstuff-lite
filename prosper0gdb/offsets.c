@@ -30,6 +30,19 @@ extern uint64_t kdata_base;
  * be re-derived from that firmware's executable kernel image and expressed
  * relative to the same kdata anchor passed by elfldr.
  */
+#include "offsets/1_00.h"
+#include "offsets/1_01.h"
+#include "offsets/1_02.h"
+#include "offsets/1_05.h"
+#include "offsets/1_10.h"
+#include "offsets/1_11.h"
+#include "offsets/1_12.h"
+#include "offsets/1_13.h"
+#include "offsets/1_14.h"
+#include "offsets/2_00.h"
+#include "offsets/2_20.h"
+#include "offsets/2_25.h"
+#include "offsets/2_26.h"
 #include "offsets/2_30.h"
 #include "offsets/2_50.h"
 #include "offsets/2_70.h"
@@ -91,6 +104,19 @@ int set_offsets(void)
     {
 #ifndef NO_BUILTIN_OFFSETS
     /* TODO(FW_PORT): register the new set_offsets_<fw>() table here too. */
+    case 0x100: set_offsets_100(); break;
+    case 0x101: set_offsets_101(); break;
+    case 0x102: set_offsets_102(); break;
+    case 0x105: set_offsets_105(); break;
+    case 0x110: set_offsets_110(); break;
+    case 0x111: set_offsets_111(); break;
+    case 0x112: set_offsets_112(); break;
+    case 0x113: set_offsets_113(); break;
+    case 0x114: set_offsets_114(); break;
+    case 0x200: set_offsets_200(); break;
+    case 0x220: set_offsets_220(); break;
+    case 0x225: set_offsets_225(); break;
+    case 0x226: set_offsets_226(); break;
     case 0x230: set_offsets_230(); break;
     case 0x250: set_offsets_250(); break;
     case 0x270: set_offsets_270(); break;

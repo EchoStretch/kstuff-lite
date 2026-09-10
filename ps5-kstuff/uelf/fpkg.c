@@ -130,7 +130,10 @@ static const struct ppr_abi_profile* get_ppr_abi_profile(void)
 
     switch(FWVER)
     {
-    case 0x250:
+    case 0x100: case 0x101: case 0x102: case 0x105:
+    case 0x110: case 0x111: case 0x112: case 0x113: case 0x114:
+    case 0x200: case 0x220: case 0x225: case 0x226: case 0x230:
+    case 0x250: case 0x270:
         return &fw250;
     case 0x300: case 0x310: case 0x320: case 0x321:
         return &fw3;

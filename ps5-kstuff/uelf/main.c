@@ -431,13 +431,19 @@ from_userspace:
     {
         /*
          * TODO(FW_PORT): derive the syscall entry stack layout from the new
-         * kernel's syscall_before path.  Confirm both syscall_rsp_to_rsi and
-         * the 10.00+ extra 0x10 bytes before extending this version rule.
+         * kernel's syscall_before path.  1.xx reserves 0xe8 bytes below RBP
+         * (rather than 0xd8), so its saved syscall-argument block is another
+         * 0x10 bytes above the intercepted RSP.  Confirm this relation and
+         * the 10.00+ extra 0x10 bytes before extending either version rule.
          */
         const uint64_t syscall_extra = (FWVER >= 0x1000 ? 0x10 : 0);
+        const uint64_t syscall_rsi_offset = FWVER <= 0x114
+                                          ? 0x98
+                                          : syscall_rsp_to_rsi
+                                          + syscall_extra;
         uint64_t syscall_target;
         regs[RAX] |= 0xffffull << 48;
-        regs[RSI] = regs[RSP] + syscall_rsp_to_rsi + syscall_extra;
+        regs[RSI] = regs[RSP] + syscall_rsi_offset;
         if(copy_u64_from_kernel(&syscall_target, regs[RAX] + 8))
             RETURN_HANDLE();
         if(push_stack_checked(regs, (const uint64_t[1]){(uint64_t)syscall_after}, 8))

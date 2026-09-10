@@ -77,15 +77,15 @@ DEF(cr0_write_ret, -0x4F5B07) // IDA 0x67A4F9
 DEF(store_rax_rdi, -0x96E52E) // IDA 0x201AD2
 
 
-// PPR/fPKG port is not enabled for this firmware table.
-DEF(ppr_pfs_get_xts_index, 0)
-DEF(ppr_pfs_get_cmac_index, 0)
-DEF(ppr_pfs_get_xts_return, 0)
-DEF(ppr_pfs_get_cmac_return, 0)
-DEF(ppr_pfs_cleanup_keys, 0)
-DEF(ppr_pfs_clear_key_missing, 0)
-DEF(sceSblServiceMailbox_lr_verifyImage, 0)
-DEF(ppr_pfs_verify_image_no_key_success, 0)
+// PPR/fPKG continuations and wrapper-local ABI sites.
+DEF(ppr_pfs_get_xts_index, -0x106c90)
+DEF(ppr_pfs_get_cmac_index, -0x106b30)
+DEF(ppr_pfs_get_xts_return, -0x8115bf)
+DEF(ppr_pfs_get_cmac_return, -0x811571)
+DEF(ppr_pfs_cleanup_keys, -0x818390)
+DEF(ppr_pfs_clear_key_missing, -0x8e6997)
+DEF(sceSblServiceMailbox_lr_verifyImage, -0x8e7dff)
+DEF(ppr_pfs_verify_image_no_key_success, -0x8e7958)
 
 // non data-relative offsets
 DEF(p_sysent, 0x988)
