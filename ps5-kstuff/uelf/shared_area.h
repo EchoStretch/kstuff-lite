@@ -346,7 +346,7 @@ struct kstuff_metrics
     uint64_t fpu_xrstor_cycles_total;
     uint64_t fpu_xrstor_cycles_max;
 
-    /* FW 9.40 per-mount PLAINTEXT_NOAUTH G6 marker. */
+    /* Profile-selected per-mount PLAINTEXT_NOAUTH G6 marker. */
     uint64_t ppr_plaintext_g6_traps;
     uint64_t ppr_plaintext_profile_matches;
     uint64_t ppr_plaintext_g6_applied;

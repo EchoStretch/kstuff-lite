@@ -1,7 +1,6 @@
 BITS 64
-ORG 0x17DEB50
 
-; SceShellCore 9.40 retail hook for the sole sceFsMountPprPkg call site.
+; Relocatable SceShellCore retail hook for the sole sceFsMountPprPkg call site.
 ; The blob is copied to the zero-filled tail of the final executable page.
 ; Keep this file freestanding: it must not contain relocations or external data.
 
@@ -27,11 +26,16 @@ ORG 0x17DEB50
 %define PPR_SUPERBLOCK_SEED_OFFSET       0x370
 %define PPR_MODE_NATIVE_ENCRYPTED        0x000D
 
-%define LIBKERNEL_CLOSE_PLT              0x17D5DE0
-%define LIBKERNEL_OPEN_PLT               0x17D6F00
-%define LIBKERNEL_PREAD_PLT              0x17D7050
-%define SCE_FS_MOUNT_PPR_PKG_PLT         0x17D92E0
+%define PPR_CLOSE_REL32_PLACEHOLDER      0x534F4C43 ; "CLOS"
+%define PPR_OPEN_REL32_PLACEHOLDER       0x4E45504F ; "OPEN"
+%define PPR_PREAD_REL32_PLACEHOLDER      0x44414552 ; "READ"
+%define PPR_MOUNT_REL32_PLACEHOLDER      0x544E554D ; "MUNT"
 %define PPR_SYSCALL_TARGET_PLACEHOLDER   0x4C43535953525050
+
+%macro CALL_PLACEHOLDER 1
+    db 0xE8
+    dd %1
+%endmacro
 
 ppr_mount_940_hook:
     push rbp
@@ -60,7 +64,7 @@ ppr_mount_940_hook:
 
     xor esi, esi                    ; O_RDONLY
     xor edx, edx
-    call LIBKERNEL_OPEN_PLT
+    CALL_PLACEHOLDER PPR_OPEN_REL32_PLACEHOLDER
     test eax, eax
     js .call_original
     mov ebx, eax                    ; fd
@@ -94,7 +98,7 @@ ppr_mount_940_hook:
     call .ppr_trace
 
     mov edi, ebx
-    call LIBKERNEL_CLOSE_PLT
+    CALL_PLACEHOLDER PPR_CLOSE_REL32_PLACEHOLDER
 
     ; Avoid invoking the comparatively expensive control protocol for native
     ; packages. Full structural validation is performed again by kstuff CHECK.
@@ -193,7 +197,7 @@ ppr_mount_940_hook:
 
 .close_and_call_original:
     mov edi, ebx
-    call LIBKERNEL_CLOSE_PLT
+    CALL_PLACEHOLDER PPR_CLOSE_REL32_PLACEHOLDER
     jmp .call_original
 
 .abort_protocol:
@@ -205,7 +209,7 @@ ppr_mount_940_hook:
     mov rdi, r12
     mov rsi, r13
     mov rdx, r14
-    call SCE_FS_MOUNT_PPR_PKG_PLT
+    CALL_PLACEHOLDER PPR_MOUNT_REL32_PLACEHOLDER
     mov ebx, eax
 
     cmp r15d, 2
@@ -241,7 +245,7 @@ ppr_mount_940_hook:
     mov rsi, r12
     mov rdx, r13
     mov rcx, r14
-    call LIBKERNEL_PREAD_PLT
+    CALL_PLACEHOLDER PPR_PREAD_REL32_PLACEHOLDER
     test rax, rax
     jle .pread_failed
     add r12, rax

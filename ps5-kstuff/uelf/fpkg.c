@@ -10,6 +10,7 @@
 
 extern char sceSblServiceMailbox[];
 extern char sceSblServiceMailbox_lr_verifySuperBlock[];
+extern char sceSblServiceMailbox_lr_verifyImage[];
 extern char sceSblServiceMailbox_lr_sceSblPfsClearKey_1[];
 extern char sceSblServiceMailbox_lr_sceSblPfsClearKey_2[];
 extern char sceSblServiceRequest_lr_registerMountKey_1[];
@@ -17,33 +18,13 @@ extern char sceSblServiceRequest_lr_registerMountKey_2[];
 extern char sceSblServiceCryptAsync_deref_singleton[];
 extern char crypt_message_resolve[];
 extern char doreti_iret[];
-
-/* 9.40-only deltas from the already-relocated sceSblServiceMailbox symbol. */
-enum {
-    /* sceSblServiceMailbox is 0xffffffff956c8730 in the 9.40 IDA image. */
-    /* Exact key-index wrappers used only while setup_a53io_pkg_keys runs. */
-    PPR_PFS_940_GET_XTS_INDEX_FROM_MAILBOX = 0x5b2b80,
-    PPR_PFS_940_GET_CMAC_INDEX_FROM_MAILBOX = 0x5b2ce0,
-    PPR_PFS_940_GET_XTS_RETURN_BEFORE_MAILBOX = 0x208902,
-    PPR_PFS_940_GET_CMAC_RETURN_BEFORE_MAILBOX = 0x2088b4,
-    /* cleanup_a53io_pkg_keys entry 0xffffffff954b7d60. */
-    PPR_PFS_940_CLEANUP_KEYS_BEFORE_MAILBOX = 0x2109d0,
-    /*
-     * sceSblPfsClearKey's tree-miss status instruction at
-     * 0xffffffff953e0409.  The private FD/FC pair is deliberately absent
-     * from that tree, so complete only that exact miss as success.
-     */
-    PPR_PFS_940_CLEAR_KEY_MISSING_BEFORE_MAILBOX = 0x2e8327,
-    /*
-     * The PPR verifyImage mailbox return at 0xffffffff953defa0 is
-     * 0x1d00 bytes before the existing verifySuperBlock return at
-     * 0xffffffff953e0ca0.  Express it relative to the already verified
-     * firmware symbol so no new mandatory offset is added for other FW.
-     */
-    PPR_PFS_940_VERIFY_IMAGE_BEFORE_VERIFY_SUPERBLOCK = 0x1d00,
-    /* verifyImage LR 0xffffffff953defa0 -> no-key success 0xffffffff953df2dc. */
-    PPR_PFS_940_VERIFY_IMAGE_NO_KEY_SUCCESS_FROM_LR = 0x33c,
-};
+extern char ppr_pfs_get_xts_index[];
+extern char ppr_pfs_get_cmac_index[];
+extern char ppr_pfs_get_xts_return[];
+extern char ppr_pfs_get_cmac_return[];
+extern char ppr_pfs_cleanup_keys[];
+extern char ppr_pfs_clear_key_missing[];
+extern char ppr_pfs_verify_image_no_key_success[];
 
 enum {
     PPR_PFS_CONTROL_PLAINTEXT_NOAUTH = 0x0009,
@@ -63,9 +44,10 @@ enum {
 };
 
 /*
- * Private verifyImage handles.  They deliberately are not -1: on 9.40
- * ppfs_read_outer_block treats ekey == -1 as a request for the unsupported
- * ppfs_read_nsid2_plain_icv path even when the on-disk mode is 0x0d.
+ * Private verifyImage handles.  They deliberately are not -1: the supported
+ * ppfs_read_outer_block paths treat ekey == -1 as a request for the
+ * unsupported ppfs_read_nsid2_plain_icv path even when the on-disk mode is
+ * 0x0d.
  * These handles are never registered in the secure-module key trees.
  */
 #define PPR_PFS_PLAINTEXT_XTS_HANDLE  (UINT32_MAX - 2u)
@@ -74,36 +56,131 @@ enum {
 static const uint8_t ppr_plaintext_seed_marker[16] =
     "PPRPLAIN-NOAUTH!";
 
+enum ppr_verify_success_abi
+{
+    PPR_VERIFY_SUCCESS_R14_R15,
+    PPR_VERIFY_SUCCESS_R13_STACK_158,
+    PPR_VERIFY_SUCCESS_R13_STACK_150,
+    PPR_VERIFY_SUCCESS_PACKED_STACK_158,
+};
+
+struct ppr_abi_profile
+{
+    uint16_t cleanup_context_offset;
+    int16_t sblock_rbp_offset;
+    uint8_t fih_reg;
+    uint8_t sblock_reg;
+    uint8_t icv_reg;
+    uint8_t clear_pair_reg;
+    uint8_t clear_xts_reg;
+    uint8_t clear_cmac_reg;
+    uint8_t clear_result_reg;
+    uint8_t clear_resume_delta;
+    uint8_t verify_success_abi;
+};
+
+#define PPR_REG_NONE 0xff
+
+/*
+ * verifyImage's mailbox request is stable across the supported retail
+ * kernels, but the wrapper keeps its three output buffers and its successful
+ * key pair in different registers/stack slots. The cleanup field also varies,
+ * and sceSblPfsClearKey used five different saved-register layouts.
+ * Keep those ABI facts separate from the address table so an address-only
+ * firmware port cannot silently select an incompatible continuation.
+ */
+static const struct ppr_abi_profile* get_ppr_abi_profile(void)
+{
+    static const struct ppr_abi_profile fw250 = {
+        0x790, 0, R15, R13, RBX, R15, R14, R15, RBX, 0x16,
+        PPR_VERIFY_SUCCESS_R14_R15,
+    };
+    static const struct ppr_abi_profile fw3 = {
+        0x848, 0, R15, R13, RBX, R13, RBX, R15, R14, 0x0b,
+        PPR_VERIFY_SUCCESS_R14_R15,
+    };
+    static const struct ppr_abi_profile fw4 = {
+        0x878, 0, R15, R13, RBX, R13, R15, R14, R12, 0x17,
+        PPR_VERIFY_SUCCESS_R14_R15,
+    };
+    static const struct ppr_abi_profile fw5 = {
+        0x880, 0x10, R13, PPR_REG_NONE, RBX, R13, R15, R14, R12, 0x17,
+        PPR_VERIFY_SUCCESS_R13_STACK_158,
+    };
+    static const struct ppr_abi_profile fw6 = {
+        0x878, 0x10, R13, PPR_REG_NONE, RBX, R13, R15, R14, R12, 0x17,
+        PPR_VERIFY_SUCCESS_R13_STACK_158,
+    };
+    static const struct ppr_abi_profile fw7 = {
+        0x878, 0, R13, R14, R15, R13, RBX, R14, R15, 0x0b,
+        PPR_VERIFY_SUCCESS_R13_STACK_150,
+    };
+    static const struct ppr_abi_profile fw8_9 = {
+        0x878, 0, R13, R14, R15, R13, R14, R15, RBX, 0x16,
+        PPR_VERIFY_SUCCESS_R13_STACK_150,
+    };
+    static const struct ppr_abi_profile fw10 = {
+        0x878, 0, R14, R13, R15, R13, R14, R15, RBX, 0x16,
+        PPR_VERIFY_SUCCESS_PACKED_STACK_158,
+    };
+    static const struct ppr_abi_profile fw11 = {
+        0x878, 0, R14, R13, R15, R13, R14, R15, RBX, 0x0a,
+        PPR_VERIFY_SUCCESS_PACKED_STACK_158,
+    };
+
+    switch(FWVER)
+    {
+    case 0x250:
+        return &fw250;
+    case 0x300: case 0x310: case 0x320: case 0x321:
+        return &fw3;
+    case 0x400: case 0x402: case 0x403: case 0x450: case 0x451:
+        return &fw4;
+    case 0x500: case 0x502: case 0x510: case 0x550:
+        return &fw5;
+    case 0x600: case 0x602: case 0x650:
+        return &fw6;
+    case 0x700: case 0x701: case 0x720: case 0x740:
+    case 0x760: case 0x761:
+        return &fw7;
+    case 0x800: case 0x820: case 0x840: case 0x860:
+    case 0x900: case 0x905: case 0x920: case 0x940: case 0x960:
+        return &fw8_9;
+    case 0x1000: case 0x1001: case 0x1020: case 0x1040: case 0x1060:
+        return &fw10;
+    case 0x1100: case 0x1120: case 0x1140:
+        return &fw11;
+    default:
+        return NULL;
+    }
+}
+
 static uint64_t ppr_pfs_plaintext_get_xts_index(void)
 {
-    if(FWVER != 0x940)
+    if(!get_ppr_abi_profile())
         return 0;
-    return (uint64_t)sceSblServiceMailbox
-         + PPR_PFS_940_GET_XTS_INDEX_FROM_MAILBOX;
+    return (uint64_t)ppr_pfs_get_xts_index;
 }
 
 static uint64_t ppr_pfs_plaintext_get_cmac_index(void)
 {
-    if(FWVER != 0x940)
+    if(!get_ppr_abi_profile())
         return 0;
-    return (uint64_t)sceSblServiceMailbox
-         + PPR_PFS_940_GET_CMAC_INDEX_FROM_MAILBOX;
+    return (uint64_t)ppr_pfs_get_cmac_index;
 }
 
 static uint64_t ppr_pfs_plaintext_cleanup_keys(void)
 {
-    if(FWVER != 0x940)
+    if(!get_ppr_abi_profile())
         return 0;
-    return (uint64_t)sceSblServiceMailbox
-         - PPR_PFS_940_CLEANUP_KEYS_BEFORE_MAILBOX;
+    return (uint64_t)ppr_pfs_cleanup_keys;
 }
 
 static uint64_t ppr_pfs_plaintext_clear_key_missing(void)
 {
-    if(FWVER != 0x940)
+    if(!get_ppr_abi_profile())
         return 0;
-    return (uint64_t)sceSblServiceMailbox
-         - PPR_PFS_940_CLEAR_KEY_MISSING_BEFORE_MAILBOX;
+    return (uint64_t)ppr_pfs_clear_key_missing;
 }
 
 static void retain_ppr_plaintext_key_pair(void)
@@ -142,10 +219,9 @@ static int release_ppr_plaintext_key_pair(uint64_t* xts_remaining,
 
 static uint64_t ppr_pfs_verify_image_lr(void)
 {
-    if(FWVER != 0x940)
+    if(!get_ppr_abi_profile())
         return 0;
-    return (uint64_t)sceSblServiceMailbox_lr_verifySuperBlock
-         - PPR_PFS_940_VERIFY_IMAGE_BEFORE_VERIFY_SUPERBLOCK;
+    return (uint64_t)sceSblServiceMailbox_lr_verifyImage;
 }
 
 static uint64_t canonicalize_debug_kernel_pointer(uint64_t value)
@@ -491,7 +567,7 @@ int control_ppr_plaintext_request(uint64_t magic, uint64_t mode,
      * established kekcall fast snapshot ends at RAX and includes R8/R9.
      */
     *result = 0;
-    if(FWVER != 0x940 || magic != 0x505052504c41494eull)
+    if(!get_ppr_abi_profile() || magic != 0x505052504c41494eull)
         return EINVAL;
     if(mode == PPR_CONTROL_TRACE)
     {
@@ -619,9 +695,9 @@ static void try_emulate_plaintext_key_index(uint64_t* regs, int cmac)
      * unsupported ppfs_read_nsid2_plain_icv path before A53 is reached.
      */
     uint32_t expected_index = cmac ? 0xfe : 0xff;
-    uint64_t expected_return = (uint64_t)sceSblServiceMailbox
-        - (cmac ? PPR_PFS_940_GET_CMAC_RETURN_BEFORE_MAILBOX
-                : PPR_PFS_940_GET_XTS_RETURN_BEFORE_MAILBOX);
+    uint64_t expected_return = cmac
+                             ? (uint64_t)ppr_pfs_get_cmac_return
+                             : (uint64_t)ppr_pfs_get_xts_return;
     uint64_t return_address = 0;
     if(!current_ppr_plaintext_session_active(&active_td)
     || (uint32_t)regs[RDI] != expected_handle
@@ -653,6 +729,7 @@ static void try_emulate_plaintext_key_index(uint64_t* regs, int cmac)
 
 static void try_prepare_plaintext_key_cleanup(uint64_t* regs)
 {
+    const struct ppr_abi_profile* abi = get_ppr_abi_profile();
     uint64_t cleanup_context = 0;
     uint64_t key_indices = 0;
 #if KSTUFF_OBS
@@ -667,15 +744,17 @@ static void try_prepare_plaintext_key_cleanup(uint64_t* regs)
     canonicalize_debug_gprs(regs);
 
     /*
-     * a1[271] points at the transient ppfs cleanup context. XTS and CMAC
-     * indices are adjacent dwords at +56/+60. They were never reserved in the
-     * stock allocator, so convert only the exact FF/FE pair to its normal
-     * "not installed" representation before the original cleanup tests it.
+     * The profile-selected mount field points at the transient ppfs cleanup
+     * context. XTS and CMAC indices are adjacent dwords at +56/+60. They were
+     * never reserved in the stock allocator, so convert only the exact FF/FE
+     * pair to its normal "not installed" representation before the original
+     * cleanup tests it.
      */
-    if(!has_ppr_plaintext_key_pair()
+    if(!abi
+    || !has_ppr_plaintext_key_pair()
     || (regs[RDI] >> 48) != 0xffff
     || copy_u64_from_kernel(&cleanup_context,
-                            regs[RDI] + 271 * sizeof(uint64_t)))
+                            regs[RDI] + abi->cleanup_context_offset))
         return;
     cleanup_context = canonicalize_debug_kernel_pointer(cleanup_context);
     if((cleanup_context >> 48) != 0xffff
@@ -712,27 +791,32 @@ static void try_prepare_plaintext_key_cleanup(uint64_t* regs)
 
 static void try_emulate_plaintext_clear_key_missing(uint64_t* regs)
 {
+    const struct ppr_abi_profile* abi = get_ppr_abi_profile();
     const uint64_t expected_pair =
         ((uint64_t)PPR_PFS_PLAINTEXT_XTS_HANDLE << 32)
       | PPR_PFS_PLAINTEXT_CMAC_HANDLE;
     uint64_t xts_remaining = 0;
     uint64_t cmac_remaining = 0;
     uint64_t trap = ppr_pfs_plaintext_clear_key_missing();
-    int expected_args = regs[R13] == expected_pair
-                     || (regs[R14] == PPR_PFS_PLAINTEXT_XTS_HANDLE
-                      && regs[R15] == PPR_PFS_PLAINTEXT_CMAC_HANDLE);
+    int expected_args = abi
+                     && (regs[abi->clear_pair_reg] == expected_pair
+                      || (regs[abi->clear_xts_reg]
+                                      == PPR_PFS_PLAINTEXT_XTS_HANDLE
+                       && regs[abi->clear_cmac_reg]
+                                      == PPR_PFS_PLAINTEXT_CMAC_HANDLE));
 
     /* At this point sceSblPfsClearKey has normally built (a1 << 32) | a2 in
-     * R13 and still owns its normal lock/frame.  If the tree root itself is
+     * its generation-specific pair register and still owns its normal
+     * lock/frame.  If the tree root itself is
      * null, the branch arrives before that construction and the original
-     * zero-extended arguments remain in R14/R15, so accept that equivalent
-     * exact shape too.  Unrelated misses execute the trapped stock instruction
-     * through RF without register or RIP emulation.
+     * zero-extended arguments remain in the saved argument registers, so
+     * accept that equivalent exact shape too.  Unrelated misses execute the
+     * trapped stock instruction through RF without register or RIP emulation.
      */
     if(!expected_args
     || !has_ppr_plaintext_key_pair())
     {
-        /* RF lets the trapped stock `mov ebx, 0xfffffffe` execute once. */
+        /* RF lets the trapped stock result assignment execute once. */
         return;
     }
     if(!release_ppr_plaintext_key_pair(&xts_remaining, &cmac_remaining))
@@ -744,10 +828,10 @@ static void try_emulate_plaintext_clear_key_missing(uint64_t* regs)
 
     /*
      * Skip the diagnostic call but retain sceSblPfsClearKey's stock unlock,
-     * stack-canary check and epilogue at loc_ffffffff953e041f.
+     * stack-canary check and profile-specific epilogue.
      */
-    regs[RBX] = 0;
-    regs[RIP] = trap + 0x16;
+    regs[abi->clear_result_reg] = 0;
+    regs[RIP] = trap + abi->clear_resume_delta;
     METRIC_INC(clear_key_emulated);
     observe_current_syscall_emulated();
 #if KSTUFF_OBS
@@ -1096,6 +1180,7 @@ int try_handle_fpkg_trap(uint64_t* regs)
 
 int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
 {
+    const struct ppr_abi_profile* ppr_abi = get_ppr_abi_profile();
     uint64_t ppr_verify_image_lr = ppr_pfs_verify_image_lr();
     int is_ppr_verify_image = ppr_verify_image_lr && lr == ppr_verify_image_lr;
 
@@ -1119,10 +1204,23 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
         uint64_t fih_read_size = 0;
         uint64_t sblock_input_size = 0;
         uint64_t ppr_request_malformed = 0;
+        uint64_t fih_output = 0;
+        uint64_t sblock_output = 0;
+        uint64_t icv_output = 0;
         int ppr_plaintext_pending = is_ppr_verify_image
                                   && current_ppr_plaintext_session_pending();
         if(ppr_plaintext_pending)
         {
+            fih_output = regs[ppr_abi->fih_reg];
+            icv_output = regs[ppr_abi->icv_reg];
+            if(ppr_abi->sblock_reg != PPR_REG_NONE)
+                sblock_output = regs[ppr_abi->sblock_reg];
+            else if(copy_u64_from_kernel(
+                        &sblock_output,
+                        regs[RBP] + ppr_abi->sblock_rbp_offset))
+                ppr_request_malformed |= 1ull << 5;
+            sblock_output = canonicalize_debug_kernel_pointer(sblock_output);
+
             /* req[9] is { FIH output size, superblock output capacity }. */
             fih_read_size = (uint32_t)req[9];
             sblock_input_size = req[9] >> 32;
@@ -1133,11 +1231,11 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
              * mailbox request.  The request itself gives the two exact
              * extents in req[9]; validate those and every range we write.
              */
-            if(!is_kernel_range(regs[R13], PPR_FIH_SIZE))
+            if(!is_kernel_range(fih_output, PPR_FIH_SIZE))
                 ppr_request_malformed |= 1ull << 0;
-            if(!is_kernel_range(regs[R14], 0x3000))
+            if(!is_kernel_range(sblock_output, 0x3000))
                 ppr_request_malformed |= 1ull << 1;
-            if(!is_kernel_range(regs[R15], PPR_FIH_SIZE))
+            if(!is_kernel_range(icv_output, PPR_FIH_SIZE))
                 ppr_request_malformed |= 1ull << 2;
             if(fih_read_size != PPR_FIH_SIZE)
                 ppr_request_malformed |= 1ull << 3;
@@ -1166,8 +1264,8 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
 #endif
 
         /*
-         * The legacy path enters through verifySuperBlock.  PPR on 9.40
-         * instead enters through verifyImage at a distinct return address.
+         * The legacy path enters through verifySuperBlock. PPR instead enters
+         * through verifyImage at a firmware-specific return address.
          * For an explicitly armed PLAINTEXT_NOAUTH profile the secure module
          * is intentionally not entered:
          * return its normal success shape with two distinct sentinel handles
@@ -1195,10 +1293,10 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
          * remain the bytes from the package.  This is required even without
          * authentication: the kernel derives its outer ICV/fsmeta table
          * geometry from FIH +0x90 before any read request reaches A53.
-         * verifySuperBlock keeps its established DMEM layout. At the 9.40
+         * verifySuperBlock keeps its established DMEM layout. At the
          * verifyImage mailbox call the secure-module output buffers have not
-         * been filled yet, so the exact LR, request shape and one-shot
-         * same-thread latch are all required.
+         * been filled yet, so the exact LR, request shape, firmware ABI
+         * profile and one-shot same-thread latch are all required.
          * The active same-thread session authorizes only the two exact sentinel
          * key-index calls from setup_a53io_pkg_keys and is explicitly cleared
          * by ppr_mount after sceFsMountPprPkg returns.
@@ -1216,7 +1314,7 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
         {
             memcpy(&pfs_mode, DMEM+req[3]+0x1c, sizeof(pfs_mode));
         }
-        if(!mode_error && FWVER == 0x940
+        if(!mode_error && ppr_abi
         && pfs_mode == PPR_PFS_CONTROL_PLAINTEXT_NOAUTH)
         {
             /* sm_pfs command 0x0001 returns the fixed verified header size. */
@@ -1241,9 +1339,9 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
                     copy_error = EBUSY;
             }
             if(!copy_error)
-                copy_error = zero_kernel_checked(regs[R13], fih_read_size);
+                copy_error = zero_kernel_checked(fih_output, fih_read_size);
             if(!copy_error)
-                copy_error = copy_to_kernel(regs[R13], staging->fih,
+                copy_error = copy_to_kernel(fih_output, staging->fih,
                                              sizeof(staging->fih));
             /*
              * Keep the FIH block geometry at +0x90 intact.  Clearing it makes
@@ -1251,22 +1349,22 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
              * kernel before they reach the A53 no-auth selector.
              */
             if(!copy_error)
-                copy_error = zero_kernel_checked(regs[R14],
+                copy_error = zero_kernel_checked(sblock_output,
                                                   sblock_input_size);
             if(!copy_error)
-                copy_error = copy_to_kernel(regs[R14], staging->superblock,
+                copy_error = copy_to_kernel(sblock_output, staging->superblock,
                                              sblock_read_size);
             /* Keep the staged, marker-bearing mode 0x0d on the stock path. */
             if(!copy_error)
                 copy_error = copy_u16_to_kernel(
-                    regs[R14] + 0x1c, PPR_PFS_MODE_NATIVE_ENCRYPTED);
+                    sblock_output + 0x1c, PPR_PFS_MODE_NATIVE_ENCRYPTED);
             if(!copy_error)
-                copy_error = zero_kernel_checked(regs[R15], fih_read_size);
+                copy_error = zero_kernel_checked(icv_output, fih_read_size);
 #if KSTUFF_OBS
             log_word(0x50505256494d4737ull); /* "PPRVIM7" */
-            log_word(regs[R13]);             /* FIH output */
-            log_word(regs[R14]);             /* superblock output */
-            log_word(regs[R15]);             /* ICV-keep output */
+            log_word(fih_output);
+            log_word(sblock_output);
+            log_word(icv_output);
             log_word(req[9]);
             log_word(ppr_request_malformed);
             log_word(copy_error);
@@ -1299,14 +1397,33 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
             _Static_assert(sizeof(fake_resp) == 32,
                            "unexpected verifyImage response layout");
             /*
-             * Recreate the two values that the skipped 9.40 wrapper code
-             * would have prepared, then continue at loc_953df2dc.  That block
-             * combines the pair and publishes both completed read sizes.  We
-             * enter it after (and deliberately without executing)
+             * Recreate the generation-specific values that the skipped
+             * wrapper code would have prepared, then enter its no-key success
+             * block. That block combines the pair and publishes both
+             * completed read sizes. We enter it after (and deliberately
+             * without executing)
              * registerMountKey() or the pair RB-tree insertion.
              */
-            if(copy_u64_to_kernel(regs[RBP] - 0x150,
-                                  PPR_PFS_PLAINTEXT_XTS_HANDLE))
+            uint64_t success_stack_value = PPR_PFS_PLAINTEXT_XTS_HANDLE;
+            int success_stack_offset = 0;
+            if(ppr_abi->verify_success_abi
+                                      == PPR_VERIFY_SUCCESS_R13_STACK_158)
+                success_stack_offset = -0x158;
+            else if(ppr_abi->verify_success_abi
+                                      == PPR_VERIFY_SUCCESS_R13_STACK_150)
+                success_stack_offset = -0x150;
+            else if(ppr_abi->verify_success_abi
+                                      == PPR_VERIFY_SUCCESS_PACKED_STACK_158)
+            {
+                success_stack_offset = -0x158;
+                success_stack_value =
+                    ((uint64_t)PPR_PFS_PLAINTEXT_CMAC_HANDLE << 32)
+                  | PPR_PFS_PLAINTEXT_XTS_HANDLE;
+            }
+            if(success_stack_offset
+            && copy_u64_to_kernel(
+                   (uint64_t)((int64_t)regs[RBP] + success_stack_offset),
+                   success_stack_value))
             {
                 (void)rollback_current_ppr_plaintext_key_pair(latch_td);
                 return 0;
@@ -1321,10 +1438,18 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
                 (void)rollback_current_ppr_plaintext_key_pair(latch_td);
                 return 0;
             }
-            regs[R13] = PPR_PFS_PLAINTEXT_CMAC_HANDLE;
+            if(ppr_abi->verify_success_abi == PPR_VERIFY_SUCCESS_R14_R15)
+            {
+                regs[R14] = PPR_PFS_PLAINTEXT_XTS_HANDLE;
+                regs[R15] = PPR_PFS_PLAINTEXT_CMAC_HANDLE;
+            }
+            else if(ppr_abi->verify_success_abi
+                                      != PPR_VERIFY_SUCCESS_PACKED_STACK_158)
+            {
+                regs[R13] = PPR_PFS_PLAINTEXT_CMAC_HANDLE;
+            }
             release_ppr_plaintext_staging(latch_td);
-            regs[RIP] = lr
-                      + PPR_PFS_940_VERIFY_IMAGE_NO_KEY_SUCCESS_FROM_LR;
+            regs[RIP] = (uint64_t)ppr_pfs_verify_image_no_key_success;
             regs[RAX] = 0;
             regs[RSP] += 8;
             METRIC_INC(verify_superblock_emulated);
@@ -1448,9 +1573,9 @@ void handle_fpkg_syscall(uint64_t* regs, int is_nmount)
     };
     /*
      * Native nmount must keep its original debug-register footprint.  Arm
-     * the two 9.40 key-index entry breakpoints only for the same thread that
-     * explicitly owns an ARMED/ACTIVE PLAINTEXT_NOAUTH session; verifyImage
-     * changes ARMED to ACTIVE later during this syscall.
+     * the two profile-selected key-index entry breakpoints only for the same
+     * thread that explicitly owns an ARMED/ACTIVE PLAINTEXT_NOAUTH session;
+     * verifyImage changes ARMED to ACTIVE later during this syscall.
      */
     int enable_ppr_plaintext_traps = is_nmount
                                   && current_ppr_plaintext_session_pending();

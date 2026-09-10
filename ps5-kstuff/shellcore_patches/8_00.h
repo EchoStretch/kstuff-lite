@@ -1,6 +1,17 @@
 #ifndef SHELLCORE_PATCHES_8_00
 #define SHELLCORE_PATCHES_8_00
 
+static const struct shellcore_fpkg_offsets shellcore_fpkg_offsets_800 = {
+    .ppr_call = 0x70260d,
+    .ppr_cave = 0x1732a90,
+    .ppr_cave_size = 0x1570,
+    .close_plt = 0x1729e80,
+    .open_plt = 0x172af90,
+    .pread_plt = 0x172b100,
+    .mount_ppr_pkg_plt = 0x172d2e0,
+    .getpid_plt = 0x1729b90,
+};
+
 static struct shellcore_patch shellcore_patches_800_retail[] = {
     {0xba85ce, "\x52\xeb\x08", 3}, //push rdx; jmp 0xBA85D9
     {0xba85d9, "\xe8\xe2\xf6\xff\xff\x58\xc3", 7}, //call 0xBA7CC0; pop rax; ret

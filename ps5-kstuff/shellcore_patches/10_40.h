@@ -1,6 +1,17 @@
 #ifndef SHELLCORE_PATCHES_10_40
 #define SHELLCORE_PATCHES_10_40
 
+static const struct shellcore_fpkg_offsets shellcore_fpkg_offsets_1040 = {
+    .ppr_call = 0x75a2f7,
+    .ppr_cave = 0x17df900,
+    .ppr_cave_size = 0x700,
+    .close_plt = 0x17d6ad0,
+    .open_plt = 0x17d7c20,
+    .pread_plt = 0x17d7da0,
+    .mount_ppr_pkg_plt = 0x17da080,
+    .getpid_plt = 0x17d67e0,
+};
+
 static struct shellcore_patch shellcore_patches_1040_retail[] = {
     {0xC07DB3, "\x52\xeb\xe2", 3}, // push rdx; jmp 0xC07D98
     {0xC07D98, "\xe8\x33\xf8\xff\xff\x58\xc3", 7}, // call 0xC075D0; pop rax; ret

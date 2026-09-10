@@ -6,6 +6,7 @@ extern uint64_t kdata_base;
 
 #define KDATA_OFFSET(x) offsets.x = kdata_base + x;
 #define ABSOLUTE_OFFSET(x) offsets.x = x;
+#define OPTIONAL_KDATA_OFFSET(x) offsets.x = x ? kdata_base + x : 0;
 #define DEF(x, y) enum { x = (y) + 0 * sizeof(offsets.x) };
 
 #define START_FW(fw) void set_offsets_ ## fw(void) {
@@ -147,11 +148,14 @@ int set_offsets(void)
     /* Reject any table containing an unsupported zero-delta sentinel. */
 #undef KDATA_OFFSET
 #undef ABSOLUTE_OFFSET
+#undef OPTIONAL_KDATA_OFFSET
 #define KDATA_OFFSET(x) if(offsets.x == kdata_base) return -1;
 #define ABSOLUTE_OFFSET(x) if(!offsets.x) return -1;
+#define OPTIONAL_KDATA_OFFSET(x)
 #include "offsets/offset_list.txt"
 #undef KDATA_OFFSET
 #undef ABSOLUTE_OFFSET
+#undef OPTIONAL_KDATA_OFFSET
 
     return 0;
 }
