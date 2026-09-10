@@ -13,6 +13,7 @@ ORG 0x17DEB50
 %define PPR_CONTROL_WRITE                2
 %define PPR_CONTROL_CHECK                3
 %define PPR_CONTROL_ARM                  9
+%define PPR_CONTROL_TRACE                10
 
 %define PPR_FIH_SIZE                     0x1000
 %define PPR_SUPERBLOCK_SIZE              0x5A0
@@ -54,12 +55,19 @@ ppr_mount_940_hook:
     test rdi, rdi
     jz .call_original
 
+    mov edx, 1                     ; entered the patched call site
+    call .ppr_trace
+    mov rdi, [r12 + PPR_OPT_STAGE1_IMAGE]
+
     xor esi, esi                    ; O_RDONLY
     xor edx, edx
     call LIBKERNEL_OPEN_PLT
     test eax, eax
     js .call_original
     mov ebx, eax                    ; fd
+
+    mov edx, 2                     ; package file opened
+    call .ppr_trace
 
     mov edi, ebx
     mov rsi, rsp
@@ -68,6 +76,9 @@ ppr_mount_940_hook:
     call .pread_exact
     test eax, eax
     jnz .close_and_call_original
+
+    mov edx, 3                     ; FIH snapshot read
+    call .ppr_trace
 
     mov edi, ebx
     lea rsi, [rsp + PPR_FIH_SIZE]
@@ -82,6 +93,9 @@ ppr_mount_940_hook:
     call .pread_exact
     test eax, eax
     jnz .close_and_call_original
+
+    mov edx, 4                     ; outer superblock snapshot read
+    call .ppr_trace
 
     mov edi, ebx
     call LIBKERNEL_CLOSE_PLT
@@ -98,6 +112,9 @@ ppr_mount_940_hook:
     mov rax, 0x21485455414F4E2D     ; "-NOAUTH!" in memory byte order
     cmp [rsp + PPR_FIH_SIZE + PPR_SUPERBLOCK_SEED_OFFSET + 8], rax
     jne .call_original
+
+    mov edx, 5                     ; plaintext/no-auth marker accepted
+    call .ppr_trace
 
     ; BEGIN(version=8)
     mov esi, PPR_CONTROL_BEGIN
@@ -127,6 +144,8 @@ ppr_mount_940_hook:
 
 .begin_ready:
     mov r15d, 1
+    mov edx, 6                     ; staging ownership acquired
+    call .ppr_trace
 
     ; WRITE(offset, 0, word0, word1), 16 bytes per request.
     xor ebx, ebx
@@ -144,6 +163,9 @@ ppr_mount_940_hook:
     cmp ebx, PPR_STAGING_SIZE
     jb .write_loop
 
+    mov edx, 7                     ; complete snapshot transferred
+    call .ppr_trace
+
     ; CHECK must return a zero validation mask.
     mov esi, PPR_CONTROL_CHECK
     xor edx, edx
@@ -154,6 +176,9 @@ ppr_mount_940_hook:
     jc .abort_protocol
     test rax, rax
     jnz .abort_protocol
+
+    mov edx, 8                     ; kernel-side validation passed
+    call .ppr_trace
 
     ; ARM the one-shot same-thread plaintext session.
     mov esi, PPR_CONTROL_ARM
@@ -166,6 +191,8 @@ ppr_mount_940_hook:
     test rax, rax
     jnz .abort_protocol
     mov r15d, 2
+    mov edx, 9                     ; one-shot mount latch armed
+    call .ppr_trace
     jmp .call_original
 
 .close_and_call_original:
@@ -248,6 +275,20 @@ ppr_mount_940_hook:
     ; rather than loading a qword from the cave as data.
     mov r11, PPR_SYSCALL_TARGET_PLACEHOLDER
     call r11
+    ret
+
+; EDX is the last successfully completed hook stage.  The trace is advisory:
+; failure to record it must never change the stock mount path.
+.ppr_trace:
+    push rbx
+    mov ebx, edx
+    mov esi, PPR_CONTROL_TRACE
+    xor r10d, r10d
+    xor r8d, r8d
+    xor r9d, r9d
+    call .ppr_control
+    mov edx, ebx
+    pop rbx
     ret
 
 .ppr_clear:

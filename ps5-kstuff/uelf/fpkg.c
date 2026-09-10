@@ -59,6 +59,7 @@ enum {
     PPR_CONTROL_BEGIN = 1,
     PPR_CONTROL_WRITE = 2,
     PPR_CONTROL_CHECK = 3,
+    PPR_CONTROL_TRACE = 10,
 };
 
 /*
@@ -492,6 +493,14 @@ int control_ppr_plaintext_request(uint64_t magic, uint64_t mode,
     *result = 0;
     if(FWVER != 0x940 || magic != 0x505052504c41494eull)
         return EINVAL;
+    if(mode == PPR_CONTROL_TRACE)
+    {
+        __atomic_store_n(&shared_area.ppr_plaintext_hook_stage, arg0,
+                         __ATOMIC_RELEASE);
+        __atomic_store_n(&shared_area.ppr_plaintext_hook_value, arg2,
+                         __ATOMIC_RELEASE);
+        return 0;
+    }
     uint64_t td = 0;
     if(get_current_ppr_thread(&td))
         return EFAULT;
@@ -1149,6 +1158,10 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
             log_word(latch_td);
             log_word(ppr_plaintext_latched);
             log_word(ppr_request_malformed);
+            log_word(__atomic_load_n(
+                &shared_area.ppr_plaintext_hook_stage, __ATOMIC_ACQUIRE));
+            log_word(__atomic_load_n(
+                &shared_area.ppr_plaintext_hook_value, __ATOMIC_ACQUIRE));
         }
 #endif
 

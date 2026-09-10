@@ -416,6 +416,11 @@ struct shared_area_layout
      * halves permanently out of sync. */
     uint64_t ppr_plaintext_key_pairs_outstanding;
     uint64_t ppr_plaintext_key_pairs_reserved;
+    /* Last successfully completed stage in the ShellCore auto-mount hook.
+     * This remains visible after a failed secure-module request so the OBS
+     * mailbox trace can distinguish a missing hook from I/O/protocol failure. */
+    uint64_t ppr_plaintext_hook_stage;
+    uint64_t ppr_plaintext_hook_value;
 #if KSTUFF_OBS
     struct kstuff_metrics metrics;
     struct kstuff_word_log word_log;
@@ -448,8 +453,8 @@ _Static_assert(sizeof(struct kstuff_ioctl_com_table) == 3088, "unexpected ioctl 
 _Static_assert(sizeof(struct kstuff_msg_log) == 504, "unexpected message log size");
 _Static_assert(sizeof(struct kstuff_snapshot) == 6088, "unexpected snapshot size");
 #if KSTUFF_OBS
-_Static_assert(sizeof(struct shared_area_layout) == 13832, "unexpected shared_area size");
+_Static_assert(sizeof(struct shared_area_layout) == 13848, "unexpected shared_area size");
 #else
-_Static_assert(sizeof(struct shared_area_layout) == 7760, "unexpected non-OBS shared_area size");
+_Static_assert(sizeof(struct shared_area_layout) == 7776, "unexpected non-OBS shared_area size");
 #endif
 _Static_assert(sizeof(struct shared_area_layout) <= SHARED_AREA_SIZE, "shared_area must fit in configured mapping");
