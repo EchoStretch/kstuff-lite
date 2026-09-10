@@ -21,7 +21,6 @@ ORG 0x17DEB50
 %define PPR_STACK_SIZE                   0x15B8
 
 %define PPR_OPT_STAGE1_IMAGE             0x00
-%define PPR_OPT_STAGE1_IMAGE_OFFSET      0x18
 %define PPR_OPT_STAGE1_SUPERBLOCK_OFFSET 0x20
 
 %define PPR_SUPERBLOCK_MODE_OFFSET       0x1C
@@ -83,13 +82,10 @@ ppr_mount_940_hook:
     mov edi, ebx
     lea rsi, [rsp + PPR_FIH_SIZE]
     mov edx, PPR_SUPERBLOCK_SIZE
+    ; ShellCore stores the package-absolute outer superblock offset here.
+    ; libSceFsInternalForVsh later subtracts opt+0x18 only when it creates
+    ; the kernel-relative mount option; pread itself uses opt+0x20 verbatim.
     mov rcx, [r12 + PPR_OPT_STAGE1_SUPERBLOCK_OFFSET]
-    ; stage1_sblock_sel is relative to the FIH image selected by stage1_arg,
-    ; not an absolute offset in the package file.  For a finalized FIH image
-    ; stage1_arg is normally 0x10000, so omitting it stages the preceding NAPS
-    ; block and the PLAINTEXT_NOAUTH selector silently falls back to sm_pfs.
-    add rcx, [r12 + PPR_OPT_STAGE1_IMAGE_OFFSET]
-    jc .close_and_call_original
     call .pread_exact
     test eax, eax
     jnz .close_and_call_original
