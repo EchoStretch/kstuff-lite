@@ -1419,9 +1419,15 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
                                       == PPR_VERIFY_SUCCESS_PACKED_STACK_158)
             {
                 success_stack_offset = -0x158;
+                /*
+                 * The 10.x/11.x no-key continuation loads this qword and
+                 * publishes its upper dword as ekey (XTS) and its lower
+                 * dword as skey (CMAC).  Keep that order distinct from the
+                 * in-memory key-index pair used later by ppfs cleanup.
+                 */
                 success_stack_value =
-                    ((uint64_t)PPR_PFS_PLAINTEXT_CMAC_HANDLE << 32)
-                  | PPR_PFS_PLAINTEXT_XTS_HANDLE;
+                    ((uint64_t)PPR_PFS_PLAINTEXT_XTS_HANDLE << 32)
+                  | PPR_PFS_PLAINTEXT_CMAC_HANDLE;
             }
             if(success_stack_offset
             && copy_u64_to_kernel(
