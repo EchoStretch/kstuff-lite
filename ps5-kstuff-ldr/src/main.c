@@ -337,6 +337,9 @@ static int monitor_usb_changes(void) {
 
     while (1) {
         if (kevent(kq, NULL, 0, &evt, 1, NULL) < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
             klog_perror("kevent wait failed while monitoring USB changes");
             break;
         }
