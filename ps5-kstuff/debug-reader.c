@@ -367,6 +367,7 @@ static void print_metrics(const struct kstuff_metrics* metrics)
     PRINT_FIELD("applied", metrics->ppr_plaintext_g6_applied);
     PRINT_FIELD("bad_initial", metrics->ppr_plaintext_g6_bad_initial_indices);
     PRINT_FIELD("copy_fail", metrics->ppr_plaintext_g6_copy_failures);
+    PRINT_FIELD("put_emu", metrics->ppr_plaintext_cleanup_put_emulated);
     tee_putc('\n');
 
     tee_printf("ppr_verify_request");
@@ -657,6 +658,8 @@ int main(void)
         print_new_msg_log(&snapshot, &msg_seq);
         print_new_word_log(&snapshot, &word_seq);
         print_metrics(&snapshot.metrics);
+        tee_printf("ppr_lifetime outstanding=%" PRIu64 "\n",
+                   snapshot.ppr_plaintext_key_pairs_outstanding);
         print_syscall_stats(&snapshot.metrics);
         print_ioctl_com_table(&snapshot.ioctl_com_table, snapshot.metrics.syscall_ioctl_dispatches);
 

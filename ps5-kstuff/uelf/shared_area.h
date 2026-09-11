@@ -365,6 +365,9 @@ struct kstuff_metrics
     uint64_t ppr_verify_last_latch_td;
     uint64_t ppr_plaintext_hook_stage;
     uint64_t ppr_plaintext_hook_value;
+
+    /* Synthetic cleanup call-site handling. */
+    uint64_t ppr_plaintext_cleanup_put_emulated;
 };
 
 struct kstuff_word_log_entry
@@ -410,6 +413,9 @@ struct kstuff_snapshot
     struct kstuff_word_log word_log;
     struct kstuff_ioctl_com_table ioctl_com_table;
     struct kstuff_msg_log msg_log;
+    /* Exact lifetime gauge; kept outside metrics so concurrent retain/release
+     * cannot leave a mirrored diagnostic value stale. */
+    uint64_t ppr_plaintext_key_pairs_outstanding;
 };
 
 struct shared_area_layout
@@ -457,14 +463,14 @@ extern struct shared_area_layout shared_area;
 #define METRIC_MAX(field, value) do { } while(0)
 #endif
 
-_Static_assert(sizeof(struct kstuff_metrics) == 2304, "unexpected metrics size");
+_Static_assert(sizeof(struct kstuff_metrics) == 2312, "unexpected metrics size");
 _Static_assert(sizeof(struct kstuff_word_log) == 264, "unexpected word log size");
 _Static_assert(sizeof(struct kstuff_ioctl_com_entry) == 24, "unexpected ioctl com entry size");
 _Static_assert(sizeof(struct kstuff_ioctl_com_table) == 3088, "unexpected ioctl com table size");
 _Static_assert(sizeof(struct kstuff_msg_log) == 504, "unexpected message log size");
-_Static_assert(sizeof(struct kstuff_snapshot) == 6176, "unexpected snapshot size");
+_Static_assert(sizeof(struct kstuff_snapshot) == 6192, "unexpected snapshot size");
 #if KSTUFF_OBS
-_Static_assert(sizeof(struct shared_area_layout) == 13920, "unexpected shared_area size");
+_Static_assert(sizeof(struct shared_area_layout) == 13928, "unexpected shared_area size");
 #else
 _Static_assert(sizeof(struct shared_area_layout) == 7760, "unexpected non-OBS shared_area size");
 #endif

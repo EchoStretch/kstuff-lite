@@ -64,9 +64,10 @@ enum ppr_verify_success_abi
     PPR_VERIFY_SUCCESS_PACKED_STACK_158,
 };
 
-struct ppr_abi_profile
+struct ppr_profile
 {
-    uint16_t cleanup_context_offset;
+    uint16_t cleanup_cmac_call_delta;
+    uint16_t cleanup_xts_call_delta;
     uint8_t clear_pair_reg;
     uint8_t clear_xts_reg;
     uint8_t clear_cmac_reg;
@@ -78,72 +79,97 @@ struct ppr_abi_profile
 /*
  * verifyImage's mailbox request is stable across the supported retail
  * kernels, including its physical output destinations.  The wrapper keeps
- * its successful key pair in different registers/stack slots. The cleanup
- * field also varies, and sceSblPfsClearKey used five different saved-register
- * layouts.
- * Keep those ABI facts separate from the address table so an address-only
- * firmware port cannot silently select an incompatible continuation.
+ * its successful key pair in different registers/stack slots, while
+ * sceSblPfsClearKey used five different saved-register layouts.
+ * The cleanup call deltas are kept in the same profile so a firmware cannot
+ * expose only half of the interception ABI.
+ *
+ * Every E8 delta below was verified byte-for-byte against the matching retail
+ * x86_kernel.elf. Firmware without a matching image in the local corpus is
+ * deliberately omitted. No runtime kernel-text probing is performed.
  */
-static const struct ppr_abi_profile* get_ppr_abi_profile(void)
+static const struct ppr_profile* get_ppr_profile(void)
 {
-    static const struct ppr_abi_profile fw250 = {
-        0x790, R15, R14, R15, RBX, 0x16,
+    static const struct ppr_profile fw1_early = {
+        0x126, 0x15a,
+        R15, R14, R15, RBX, 0x16,
         PPR_VERIFY_SUCCESS_R14_R15,
     };
-    static const struct ppr_abi_profile fw3 = {
-        0x848, R13, RBX, R15, R14, 0x0b,
+    static const struct ppr_profile fw1_late = {
+        0x145, 0x179,
+        R15, R14, R15, RBX, 0x16,
         PPR_VERIFY_SUCCESS_R14_R15,
     };
-    static const struct ppr_abi_profile fw4 = {
-        0x878, R13, R15, R14, R12, 0x17,
+    static const struct ppr_profile fw2 = {
+        0x144, 0x178,
+        R15, R14, R15, RBX, 0x16,
         PPR_VERIFY_SUCCESS_R14_R15,
     };
-    static const struct ppr_abi_profile fw5 = {
-        0x880, R13, R15, R14, R12, 0x17,
+    static const struct ppr_profile fw3 = {
+        0x137, 0x166,
+        R13, RBX, R15, R14, 0x0b,
+        PPR_VERIFY_SUCCESS_R14_R15,
+    };
+    static const struct ppr_profile fw4 = {
+        0x13d, 0x16c,
+        R13, R15, R14, R12, 0x17,
+        PPR_VERIFY_SUCCESS_R14_R15,
+    };
+    static const struct ppr_profile fw5_6 = {
+        0x138, 0x167,
+        R13, R15, R14, R12, 0x17,
         PPR_VERIFY_SUCCESS_R13_STACK_158,
     };
-    static const struct ppr_abi_profile fw6 = {
-        0x878, R13, R15, R14, R12, 0x17,
-        PPR_VERIFY_SUCCESS_R13_STACK_158,
-    };
-    static const struct ppr_abi_profile fw7 = {
-        0x878, R13, RBX, R14, R15, 0x0b,
+    static const struct ppr_profile fw7 = {
+        0x11c, 0x14b,
+        R13, RBX, R14, R15, 0x0b,
         PPR_VERIFY_SUCCESS_R13_STACK_150,
     };
-    static const struct ppr_abi_profile fw8_9 = {
-        0x878, R13, R14, R15, RBX, 0x16,
+    static const struct ppr_profile fw8 = {
+        0x117, 0x147,
+        R13, R14, R15, RBX, 0x16,
         PPR_VERIFY_SUCCESS_R13_STACK_150,
     };
-    static const struct ppr_abi_profile fw10 = {
-        0x878, R13, R14, R15, RBX, 0x16,
+    static const struct ppr_profile fw9 = {
+        0x119, 0x149,
+        R13, R14, R15, RBX, 0x16,
+        PPR_VERIFY_SUCCESS_R13_STACK_150,
+    };
+    static const struct ppr_profile fw10 = {
+        0x119, 0x149,
+        R13, R14, R15, RBX, 0x16,
         PPR_VERIFY_SUCCESS_PACKED_STACK_158,
     };
-    static const struct ppr_abi_profile fw11 = {
-        0x878, R13, R14, R15, RBX, 0x0a,
+    static const struct ppr_profile fw11 = {
+        0x119, 0x149,
+        R13, R14, R15, RBX, 0x0a,
         PPR_VERIFY_SUCCESS_PACKED_STACK_158,
     };
 
     switch(FWVER)
     {
-    case 0x100: case 0x101: case 0x102: case 0x105:
-    case 0x110: case 0x111: case 0x112: case 0x113: case 0x114:
-    case 0x200: case 0x220: case 0x225: case 0x226: case 0x230:
-    case 0x250: case 0x270:
-        return &fw250;
+    case 0x100: case 0x101: case 0x102:
+        return &fw1_early;
+    case 0x105: case 0x110: case 0x111: case 0x112:
+    case 0x113: case 0x114:
+        return &fw1_late;
+    case 0x200: case 0x220: case 0x225: case 0x226:
+    case 0x230: case 0x250: case 0x270:
+        return &fw2;
     case 0x300: case 0x310: case 0x320: case 0x321:
         return &fw3;
     case 0x400: case 0x402: case 0x403: case 0x450: case 0x451:
         return &fw4;
     case 0x500: case 0x502: case 0x510: case 0x550:
-        return &fw5;
     case 0x600: case 0x602: case 0x650:
-        return &fw6;
+        return &fw5_6;
     case 0x700: case 0x701: case 0x720: case 0x740:
     case 0x760: case 0x761:
         return &fw7;
     case 0x800: case 0x820: case 0x840: case 0x860:
-    case 0x900: case 0x905: case 0x920: case 0x940: case 0x960:
-        return &fw8_9;
+        return &fw8;
+    case 0x900: case 0x920: case 0x940: case 0x960:
+        return &fw9;
     case 0x1000: case 0x1001: case 0x1020: case 0x1040: case 0x1060:
         return &fw10;
     case 0x1100: case 0x1120: case 0x1140:
@@ -155,28 +181,39 @@ static const struct ppr_abi_profile* get_ppr_abi_profile(void)
 
 static uint64_t ppr_pfs_plaintext_get_xts_index(void)
 {
-    if(!get_ppr_abi_profile())
+    if(!get_ppr_profile())
         return 0;
     return (uint64_t)ppr_pfs_get_xts_index;
 }
 
 static uint64_t ppr_pfs_plaintext_get_cmac_index(void)
 {
-    if(!get_ppr_abi_profile())
+    if(!get_ppr_profile())
         return 0;
     return (uint64_t)ppr_pfs_get_cmac_index;
 }
 
-static uint64_t ppr_pfs_plaintext_cleanup_keys(void)
+static uint64_t ppr_pfs_plaintext_put_cmac_call(void)
 {
-    if(!get_ppr_abi_profile())
+    const struct ppr_profile* profile = get_ppr_profile();
+    if(!profile)
         return 0;
-    return (uint64_t)ppr_pfs_cleanup_keys;
+    return (uint64_t)ppr_pfs_cleanup_keys
+         + profile->cleanup_cmac_call_delta;
+}
+
+static uint64_t ppr_pfs_plaintext_put_xts_call(void)
+{
+    const struct ppr_profile* profile = get_ppr_profile();
+    if(!profile)
+        return 0;
+    return (uint64_t)ppr_pfs_cleanup_keys
+         + profile->cleanup_xts_call_delta;
 }
 
 static uint64_t ppr_pfs_plaintext_clear_key_missing(void)
 {
-    if(!get_ppr_abi_profile())
+    if(!get_ppr_profile())
         return 0;
     return (uint64_t)ppr_pfs_clear_key_missing;
 }
@@ -217,7 +254,7 @@ static int release_ppr_plaintext_key_pair(uint64_t* xts_remaining,
 
 static uint64_t ppr_pfs_verify_image_lr(void)
 {
-    if(!get_ppr_abi_profile())
+    if(!get_ppr_profile())
         return 0;
     return (uint64_t)sceSblServiceMailbox_lr_verifyImage;
 }
@@ -558,7 +595,7 @@ int control_ppr_plaintext_request(uint64_t magic, uint64_t mode,
      * established kekcall fast snapshot ends at RAX and includes R8/R9.
      */
     *result = 0;
-    if(!get_ppr_abi_profile() || magic != 0x505052504c41494eull)
+    if(!get_ppr_profile() || magic != 0x505052504c41494eull)
         return EINVAL;
     if(mode == PPR_CONTROL_TRACE)
     {
@@ -728,71 +765,39 @@ static void try_emulate_plaintext_key_index(uint64_t* regs, int cmac)
 #endif
 }
 
-static void try_prepare_plaintext_key_cleanup(uint64_t* regs)
+static void try_emulate_plaintext_cleanup_put(uint64_t* regs, int cmac)
 {
-    const struct ppr_abi_profile* abi = get_ppr_abi_profile();
-    uint64_t cleanup_context = 0;
-    uint64_t key_indices = 0;
-#if KSTUFF_OBS
-    uint64_t xts_retained = 0;
-    uint64_t cmac_retained = 0;
-#endif
-    const uint64_t synthetic_indices = 0x000000fe000000ffull;
-
-    /* RF is set by the common kernel-trap path, so leave RIP at the original
-     * entry and let the complete stock prologue execute after this handler.
-     * This keeps unrelated native cleanup byte-for-byte native. */
-    canonicalize_debug_gprs(regs);
-
-    /*
-     * The profile-selected mount field points at the transient ppfs cleanup
-     * context. XTS and CMAC indices are adjacent dwords at +56/+60. They were
-     * never reserved in the stock allocator, so convert only the exact FF/FE
-     * pair to its normal "not installed" representation before the original
-     * cleanup tests it.
-     */
-    if(!abi
-    || !has_ppr_plaintext_key_pair()
-    || (regs[RDI] >> 48) != 0xffff
-    || copy_u64_from_kernel(&cleanup_context,
-                            regs[RDI] + abi->cleanup_context_offset))
-        return;
-    cleanup_context = canonicalize_debug_kernel_pointer(cleanup_context);
-    if((cleanup_context >> 48) != 0xffff
-    || copy_u64_from_kernel(&key_indices, cleanup_context + 56)
-    || key_indices != synthetic_indices)
-        return;
-    if(copy_u64_to_kernel(cleanup_context + 56, UINT64_MAX))
+    /* cleanup_a53io_pkg_keys releases the positive G6 indices produced by
+     * get_*_index, not the private FC/FD handles accepted by those getters. */
+    uint32_t expected_index = cmac ? 0xfe : 0xff;
+    if((uint32_t)regs[RDI] != expected_index)
     {
-        METRIC_INC(ppr_plaintext_g6_copy_failures);
+        /* RF executes the original call for every native key index. The
+         * breakpoints themselves are installed only when this unmount began
+         * with a synthetic pair outstanding. Do not recheck the global
+         * lifetime here: sceSblPfsClearKey can consume that pair earlier in
+         * the same syscall, before cleanup_a53io_pkg_keys runs. */
         return;
     }
 
-    /*
-     * The original body now skips both ppfs_put_* calls and performs the rest
-     * of its context/VFS teardown unchanged.  Do not release the retained
-     * handles here: ppr_pfs_unmount subsequently calls sceSblPfsClearKey for
-     * the FD/FC pair.  Its stock tree lookup must miss because the private
-     * pair was never registered; the exact miss trap is the lifetime end of
-     * both synthetic keys.
-     */
+    /* The resolved trap is an E8 rel32 call instruction.  Report success to
+     * cleanup_a53io_pkg_keys so stock code sets the corresponding context
+     * field to -1, then performs its worker wake/wait and mutex destruction. */
+    regs[RAX] = 0;
+    regs[RIP] += 5;
+    METRIC_INC(ppr_plaintext_cleanup_put_emulated);
     observe_current_syscall_emulated();
 #if KSTUFF_OBS
-    xts_retained = __atomic_load_n(
-        &shared_area.ppr_plaintext_key_pairs_outstanding,
-        __ATOMIC_ACQUIRE);
-    cmac_retained = xts_retained;
-    log_word(0x505052434c4e3031ull); /* "PPRCLN01" */
-    log_word(cleanup_context);
-    log_word(key_indices);
-    log_word(xts_retained);
-    log_word(cmac_retained);
+    log_word(0x5050525055543031ull); /* "PPRPUT01" */
+    log_word(cmac ? 1 : 2);
+    log_word(expected_index);
+    log_word(regs[RIP]);
 #endif
 }
 
 static void try_emulate_plaintext_clear_key_missing(uint64_t* regs)
 {
-    const struct ppr_abi_profile* abi = get_ppr_abi_profile();
+    const struct ppr_profile* abi = get_ppr_profile();
     const uint64_t expected_pair =
         ((uint64_t)PPR_PFS_PLAINTEXT_XTS_HANDLE << 32)
       | PPR_PFS_PLAINTEXT_CMAC_HANDLE;
@@ -1139,10 +1144,13 @@ exit:
 
 int is_fpkg_trap_rip(uint64_t rip)
 {
+    uint64_t put_cmac = ppr_pfs_plaintext_put_cmac_call();
+    uint64_t put_xts = ppr_pfs_plaintext_put_xts_call();
     return rip == (uint64_t)sceSblServiceCryptAsync_deref_singleton
         || rip == ppr_pfs_plaintext_get_xts_index()
         || rip == ppr_pfs_plaintext_get_cmac_index()
-        || rip == ppr_pfs_plaintext_cleanup_keys()
+        || (put_cmac && rip == put_cmac)
+        || (put_xts && rip == put_xts)
         || rip == ppr_pfs_plaintext_clear_key_missing();
 }
 
@@ -1166,9 +1174,13 @@ int try_handle_fpkg_trap(uint64_t* regs)
     {
         try_emulate_plaintext_key_index(regs, 1);
     }
-    else if(regs[RIP] == ppr_pfs_plaintext_cleanup_keys())
+    else if(regs[RIP] == ppr_pfs_plaintext_put_cmac_call())
     {
-        try_prepare_plaintext_key_cleanup(regs);
+        try_emulate_plaintext_cleanup_put(regs, 1);
+    }
+    else if(regs[RIP] == ppr_pfs_plaintext_put_xts_call())
+    {
+        try_emulate_plaintext_cleanup_put(regs, 0);
     }
     else if(regs[RIP] == ppr_pfs_plaintext_clear_key_missing())
     {
@@ -1181,7 +1193,7 @@ int try_handle_fpkg_trap(uint64_t* regs)
 
 int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
 {
-    const struct ppr_abi_profile* ppr_abi = get_ppr_abi_profile();
+    const struct ppr_profile* ppr_abi = get_ppr_profile();
     uint64_t ppr_verify_image_lr = ppr_pfs_verify_image_lr();
     int is_ppr_verify_image = ppr_verify_image_lr
                            && lr == ppr_verify_image_lr;
@@ -1649,26 +1661,31 @@ void handle_fpkg_syscall(uint64_t* regs, int is_nmount)
      */
     int enable_ppr_plaintext_traps = is_nmount
                                   && current_ppr_plaintext_session_pending();
+    /* Exact firmware profiles make this pure address arithmetic.  No kernel
+     * text is read on ARM, mount, unmount, or #DB paths. */
+    int cleanup_pending = !is_nmount && has_ppr_plaintext_key_pair();
+    uint64_t put_cmac = cleanup_pending
+                      ? ppr_pfs_plaintext_put_cmac_call() : 0;
+    uint64_t put_xts = cleanup_pending
+                     ? ppr_pfs_plaintext_put_xts_call() : 0;
     uint64_t get_xts = enable_ppr_plaintext_traps
                      ? ppr_pfs_plaintext_get_xts_index() : 0;
     uint64_t get_cmac = enable_ppr_plaintext_traps
                       ? ppr_pfs_plaintext_get_cmac_index() : 0;
-    uint64_t cleanup_keys = ppr_pfs_plaintext_cleanup_keys();
     uint64_t clear_key_missing = ppr_pfs_plaintext_clear_key_missing();
-    if(get_xts && get_cmac && cleanup_keys)
+    if(get_xts && get_cmac && clear_key_missing)
     {
-        dbgregs_for_fpkg[1] = cleanup_keys;
-        dbgregs_for_fpkg[2] = get_xts;
-        dbgregs_for_fpkg[3] = get_cmac;
-        /* A later mount failure can clean the pair inside this same nmount. */
+        dbgregs_for_fpkg[1] = get_xts;
+        dbgregs_for_fpkg[2] = get_cmac;
+        dbgregs_for_fpkg[3] = clear_key_missing;
         dbgregs_for_fpkg[5] = 0x455; /* local DR0..DR3 + reserved bit 10 */
     }
-    else if(!is_nmount && cleanup_keys && clear_key_missing
-         && has_ppr_plaintext_key_pair())
+    else if(cleanup_pending && put_cmac && put_xts && clear_key_missing)
     {
-        dbgregs_for_fpkg[1] = cleanup_keys;
-        dbgregs_for_fpkg[2] = clear_key_missing;
-        dbgregs_for_fpkg[5] = 0x415; /* local DR0..DR2 + reserved bit 10 */
+        dbgregs_for_fpkg[1] = put_cmac;
+        dbgregs_for_fpkg[2] = put_xts;
+        dbgregs_for_fpkg[3] = clear_key_missing;
+        dbgregs_for_fpkg[5] = 0x455; /* local DR0..DR3 + reserved bit 10 */
     }
     start_syscall_with_dbgregs(regs, dbgregs_for_fpkg);
 }
