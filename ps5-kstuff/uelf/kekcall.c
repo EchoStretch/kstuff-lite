@@ -16,46 +16,6 @@ extern char copyout[];
 extern char copyin[];
 extern struct sysent sysents[];
 
-static uint64_t runtime_syscall_hook_status(void)
-{
-    uint64_t disabled = __atomic_load_n(
-        &shared_area.runtime_syscall_hook_disable_mask, __ATOMIC_ACQUIRE);
-    return KSTUFF_RUNTIME_HOOK_ALL & ~disabled;
-}
-
-int runtime_syscall_hook_enabled(uint64_t hook)
-{
-    return (runtime_syscall_hook_status() & hook) == hook;
-}
-
-static int control_runtime_syscall_hooks(uint64_t command, uint64_t mask,
-                                         uint64_t* result)
-{
-    if(command == KSTUFF_RUNTIME_HOOK_GET)
-    {
-        *result = runtime_syscall_hook_status();
-        return 0;
-    }
-    if(!mask || (mask & ~KSTUFF_RUNTIME_HOOK_ALL))
-        return EINVAL;
-
-    if(command == KSTUFF_RUNTIME_HOOK_ENABLE)
-    {
-        __atomic_fetch_and(&shared_area.runtime_syscall_hook_disable_mask,
-                           ~mask, __ATOMIC_ACQ_REL);
-    }
-    else if(command == KSTUFF_RUNTIME_HOOK_DISABLE)
-    {
-        __atomic_fetch_or(&shared_area.runtime_syscall_hook_disable_mask,
-                          mask, __ATOMIC_ACQ_REL);
-    }
-    else
-        return EINVAL;
-
-    *result = runtime_syscall_hook_status();
-    return 0;
-}
-
 int handle_kekcall(uint64_t* regs, uint64_t* args, uint32_t nr)
 {
     if(nr == 1)
@@ -134,15 +94,6 @@ int handle_kekcall(uint64_t* regs, uint64_t* args, uint32_t nr)
         int err = control_ppr_plaintext_request(args[RDI], args[RSI],
                                                 args[RDX], 0,
                                                 args[R8], args[R9],
-                                                &result);
-        if(!err)
-            args[RAX] = result;
-        return err;
-    }
-    else if(nr == KEKCALL_RUNTIME_HOOK_CONTROL)
-    {
-        uint64_t result = 0;
-        int err = control_runtime_syscall_hooks(args[RDI], args[RSI],
                                                 &result);
         if(!err)
             args[RAX] = result;
