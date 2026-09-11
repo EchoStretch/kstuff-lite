@@ -56,8 +56,8 @@ kelf: kelf.o
 structs.h: structs.inc
 	sed 's/^%/#/' structs.inc > structs.h
 
-shellcore_hook/ppr_mount_940.bin: shellcore_hook/ppr_mount_940.asm
-	yasm -f bin $< -o $@
+shellcore_hook/ppr_mount_940.bin: shellcore_hook/ppr_mount_940.asm $(BUILD_CONFIG)
+	yasm -DKSTUFF_OBS=$(KSTUFF_OBS) -f bin $< -o $@
 	@test $$(wc -c < $@) -le $$((0x300)) || (echo "ppr_mount_940.bin exceeds the reserved kstuff cave prefix"; rm -f $@; false)
 
 shellcore_hook/ppr_mount_940_blob.o: shellcore_hook/ppr_mount_940_blob.asm shellcore_hook/ppr_mount_940.bin

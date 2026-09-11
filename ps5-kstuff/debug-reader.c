@@ -369,6 +369,31 @@ static void print_metrics(const struct kstuff_metrics* metrics)
     PRINT_FIELD("copy_fail", metrics->ppr_plaintext_g6_copy_failures);
     tee_putc('\n');
 
+    tee_printf("ppr_verify_request");
+    tee_printf(" last_lr=0x%016" PRIx64, metrics->ppr_verify_last_lr);
+    tee_printf(" expected_lr=0x%016" PRIx64,
+               metrics->ppr_verify_expected_lr);
+    tee_printf(" req0=0x%016" PRIx64, metrics->ppr_verify_last_req0);
+    tee_printf(" req3=0x%016" PRIx64, metrics->ppr_verify_last_req3);
+    tee_putc('\n');
+    tee_printf("ppr_verify_outputs");
+    tee_printf(" fih_pa=0x%016" PRIx64,
+               metrics->ppr_verify_last_fih_pa);
+    tee_printf(" sblock_pa=0x%016" PRIx64,
+               metrics->ppr_verify_last_sblock_pa);
+    tee_printf(" icv_pa=0x%016" PRIx64,
+               metrics->ppr_verify_last_icv_pa);
+    tee_printf(" malformed=0x%016" PRIx64,
+               metrics->ppr_verify_last_malformed);
+    tee_printf(" latch_td=0x%016" PRIx64,
+               metrics->ppr_verify_last_latch_td);
+    tee_putc('\n');
+    tee_printf("ppr_hook");
+    PRINT_FIELD("stage", metrics->ppr_plaintext_hook_stage);
+    tee_printf(" value=0x%016" PRIx64,
+               metrics->ppr_plaintext_hook_value);
+    tee_putc('\n');
+
     tee_printf("fpkg_rejects");
     PRINT_FIELD("xts_non_fake", metrics->fpkg_reject_xts_non_fake);
     PRINT_FIELD("hmac_non_fake", metrics->fpkg_reject_hmac_non_fake);
@@ -587,7 +612,9 @@ static void print_new_msg_log(const struct kstuff_snapshot* snapshot, uint64_t* 
 int main(void)
 {
     struct kstuff_snapshot snapshot;
-    const struct timespec delay = {10, 0};
+    /* Keep the host-side trace close enough to retain the last PPR event when
+     * an early-firmware kernel panics immediately after verifyImage. */
+    const struct timespec delay = {1, 0};
 
     setvbuf(stdout, g_stdout_buf, _IOLBF, sizeof(g_stdout_buf));
     setvbuf(stderr, NULL, _IONBF, 0);

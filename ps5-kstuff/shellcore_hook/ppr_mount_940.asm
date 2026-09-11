@@ -1,5 +1,9 @@
 BITS 64
 
+%ifndef KSTUFF_OBS
+%define KSTUFF_OBS 0
+%endif
+
 ; Relocatable SceShellCore retail hook for the sole sceFsMountPprPkg call site.
 ; The blob is copied to the zero-filled tail of the final executable page.
 ; Keep this file freestanding: it must not contain relocations or external data.
@@ -94,6 +98,10 @@ ppr_mount_940_hook:
     test eax, eax
     jnz .close_and_call_original
 
+    ; TRACE stage 4 carries the first half of the marker actually read from
+    ; disk.  This distinguishes an old-layout superblock offset from a failed
+    ; control syscall without dereferencing ShellCore memory in the kernel.
+    mov r8, [rsp + PPR_FIH_SIZE + PPR_SUPERBLOCK_SEED_OFFSET]
     mov edx, 4                     ; outer superblock snapshot read
     call .ppr_trace
 
@@ -280,15 +288,16 @@ ppr_mount_940_hook:
 ; EDX is the last successfully completed hook stage.  The trace is advisory:
 ; failure to record it must never change the stock mount path.
 .ppr_trace:
+%if KSTUFF_OBS
     push rbx
     mov ebx, edx
     mov esi, PPR_CONTROL_TRACE
     xor r10d, r10d
-    xor r8d, r8d
     xor r9d, r9d
     call .ppr_control
     mov edx, ebx
     pop rbx
+%endif
     ret
 
 .ppr_clear:

@@ -67,10 +67,6 @@ enum ppr_verify_success_abi
 struct ppr_abi_profile
 {
     uint16_t cleanup_context_offset;
-    int16_t sblock_rbp_offset;
-    uint8_t fih_reg;
-    uint8_t sblock_reg;
-    uint8_t icv_reg;
     uint8_t clear_pair_reg;
     uint8_t clear_xts_reg;
     uint8_t clear_cmac_reg;
@@ -79,52 +75,51 @@ struct ppr_abi_profile
     uint8_t verify_success_abi;
 };
 
-#define PPR_REG_NONE 0xff
-
 /*
  * verifyImage's mailbox request is stable across the supported retail
- * kernels, but the wrapper keeps its three output buffers and its successful
- * key pair in different registers/stack slots. The cleanup field also varies,
- * and sceSblPfsClearKey used five different saved-register layouts.
+ * kernels, including its physical output destinations.  The wrapper keeps
+ * its successful key pair in different registers/stack slots. The cleanup
+ * field also varies, and sceSblPfsClearKey used five different saved-register
+ * layouts.
  * Keep those ABI facts separate from the address table so an address-only
  * firmware port cannot silently select an incompatible continuation.
  */
 static const struct ppr_abi_profile* get_ppr_abi_profile(void)
 {
     static const struct ppr_abi_profile fw250 = {
-        0x790, 0, R15, R13, RBX, R15, R14, R15, RBX, 0x16,
+        0x790, R15, R14, R15, RBX, 0x16,
         PPR_VERIFY_SUCCESS_R14_R15,
     };
     static const struct ppr_abi_profile fw3 = {
-        0x848, 0, R15, R13, RBX, R13, RBX, R15, R14, 0x0b,
+        0x848, R13, RBX, R15, R14, 0x0b,
         PPR_VERIFY_SUCCESS_R14_R15,
     };
     static const struct ppr_abi_profile fw4 = {
-        0x878, 0, R15, R13, RBX, R13, R15, R14, R12, 0x17,
+        0x878, R13, R15, R14, R12, 0x17,
         PPR_VERIFY_SUCCESS_R14_R15,
     };
     static const struct ppr_abi_profile fw5 = {
-        0x880, 0x10, R13, PPR_REG_NONE, RBX, R13, R15, R14, R12, 0x17,
+        0x880, R13, R15, R14, R12, 0x17,
         PPR_VERIFY_SUCCESS_R13_STACK_158,
     };
     static const struct ppr_abi_profile fw6 = {
-        0x878, 0x10, R13, PPR_REG_NONE, RBX, R13, R15, R14, R12, 0x17,
+        0x878, R13, R15, R14, R12, 0x17,
         PPR_VERIFY_SUCCESS_R13_STACK_158,
     };
     static const struct ppr_abi_profile fw7 = {
-        0x878, 0, R13, R14, R15, R13, RBX, R14, R15, 0x0b,
+        0x878, R13, RBX, R14, R15, 0x0b,
         PPR_VERIFY_SUCCESS_R13_STACK_150,
     };
     static const struct ppr_abi_profile fw8_9 = {
-        0x878, 0, R13, R14, R15, R13, R14, R15, RBX, 0x16,
+        0x878, R13, R14, R15, RBX, 0x16,
         PPR_VERIFY_SUCCESS_R13_STACK_150,
     };
     static const struct ppr_abi_profile fw10 = {
-        0x878, 0, R14, R13, R15, R13, R14, R15, RBX, 0x16,
+        0x878, R13, R14, R15, RBX, 0x16,
         PPR_VERIFY_SUCCESS_PACKED_STACK_158,
     };
     static const struct ppr_abi_profile fw11 = {
-        0x878, 0, R14, R13, R15, R13, R14, R15, RBX, 0x0a,
+        0x878, R13, R14, R15, RBX, 0x0a,
         PPR_VERIFY_SUCCESS_PACKED_STACK_158,
     };
 
@@ -244,30 +239,23 @@ static void canonicalize_debug_gprs(uint64_t* regs)
         regs[gprs[i]] = canonicalize_debug_kernel_pointer(regs[gprs[i]]);
 }
 
-static int zero_kernel_checked(uint64_t dst, uint64_t size)
+static int is_dmem_range(uint64_t address, uint64_t size)
 {
-    static const uint8_t zero[256] = {0};
-
-    if(dst + size < dst)
-        return EFAULT;
-    while(size)
-    {
-        size_t current = size < sizeof(zero) ? (size_t)size : sizeof(zero);
-        if(copy_to_kernel(dst, zero, current))
-            return EFAULT;
-        dst += current;
-        size -= current;
-    }
-    return 0;
+    /* kelf maps the first 512 GiB of physical memory at DMEM. */
+    const uint64_t dmem_size = 1ull << 39;
+    /* A verified output allocation cannot reside in physical page zero.
+     * Rejecting it also prevents a zero-filled malformed request from
+     * becoming a write through the direct map. */
+    return size && address >= 0x1000 && address < dmem_size
+                && size <= dmem_size - address;
 }
 
-static int is_kernel_range(uint64_t address, uint64_t size)
+static int dmem_ranges_overlap(uint64_t first, uint64_t first_size,
+                               uint64_t second, uint64_t second_size)
 {
-    if(!size || (address >> 48) != 0xffff)
-        return 0;
-    if(address > UINT64_MAX - (size - 1))
-        return 0;
-    return ((address + size - 1) >> 48) == 0xffff;
+    /* Call only after both ranges have passed is_dmem_range(), which also
+     * proves that the following end-address additions cannot overflow. */
+    return first < second + second_size && second < first + first_size;
 }
 
 static uint16_t load_u16_unaligned(const uint8_t* p)
@@ -574,10 +562,20 @@ int control_ppr_plaintext_request(uint64_t magic, uint64_t mode,
         return EINVAL;
     if(mode == PPR_CONTROL_TRACE)
     {
-        __atomic_store_n(&shared_area.ppr_plaintext_hook_stage, arg0,
-                         __ATOMIC_RELEASE);
-        __atomic_store_n(&shared_area.ppr_plaintext_hook_value, arg2,
-                         __ATOMIC_RELEASE);
+#if KSTUFF_OBS
+        /* These are last-value diagnostics, not protocol state.  Keeping
+         * them in the metrics snapshot avoids consuming the tiny word log
+         * three entries at a time during every ShellCore mount attempt. */
+        __atomic_store_n(&shared_area.metrics.ppr_plaintext_hook_stage, arg0,
+                         __ATOMIC_RELAXED);
+        /* Only stage 4 deliberately carries the marker word in R8.  Later
+         * trace calls inherit an arbitrary caller-saved R8 and must not
+         * overwrite the captured on-disk value. */
+        if(arg0 == 4)
+            __atomic_store_n(
+                &shared_area.metrics.ppr_plaintext_hook_value, arg2,
+                __ATOMIC_RELAXED);
+#endif
         return 0;
     }
     uint64_t td = 0;
@@ -1185,44 +1183,79 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
 {
     const struct ppr_abi_profile* ppr_abi = get_ppr_abi_profile();
     uint64_t ppr_verify_image_lr = ppr_pfs_verify_image_lr();
-    int is_ppr_verify_image = ppr_verify_image_lr && lr == ppr_verify_image_lr;
+    int is_ppr_verify_image = ppr_verify_image_lr
+                           && lr == ppr_verify_image_lr;
 
     if(lr == (uint64_t)sceSblServiceMailbox_lr_verifySuperBlock
     || is_ppr_verify_image)
     {
-        METRIC_INC(verify_superblock_mailbox);
         /* DR delivery may poison the high pointer bits in saved GPRs. */
         if(is_ppr_verify_image)
             canonicalize_debug_gprs(regs);
+        uint64_t request_address = regs[RDX];
         uint64_t req[13] = {0};
-        if(copy_from_kernel(req, regs[RDX], 64))
+        int req_head_copy_error = copy_from_kernel(req, request_address, 64);
+        int ppr_plaintext_pending = is_ppr_verify_image && ppr_abi
+                                 && __atomic_load_n(
+                                      &shared_area.ppr_plaintext_staging.ready,
+                                      __ATOMIC_ACQUIRE)
+                                 && current_ppr_plaintext_session_pending();
+        METRIC_INC(verify_superblock_mailbox);
+#if KSTUFF_OBS
+        if(is_ppr_verify_image)
+        {
+            __atomic_store_n(&shared_area.metrics.ppr_verify_last_lr, lr,
+                             __ATOMIC_RELAXED);
+            __atomic_store_n(&shared_area.metrics.ppr_verify_expected_lr,
+                             ppr_verify_image_lr, __ATOMIC_RELAXED);
+            __atomic_store_n(&shared_area.metrics.ppr_verify_last_req0,
+                             req[0], __ATOMIC_RELAXED);
+            __atomic_store_n(&shared_area.metrics.ppr_verify_last_req3,
+                             req[3], __ATOMIC_RELAXED);
+        }
+#endif
+#if KSTUFF_OBS
+        if(is_ppr_verify_image)
+        {
+            /*
+             * Log before validating the generation-specific request shape.
+             * Otherwise a changed layout is indistinguishable from a missed
+             * mailbox breakpoint and the real SM request may merely time out.
+             */
+            log_word(0x5050524d42583333ull); /* "PPRMBX33" */
+            log_word(lr);
+            log_word(ppr_verify_image_lr);
+            log_word(request_address);
+            log_word((uint32_t)req_head_copy_error);
+            log_word(req[0]);
+            log_word(req[3]);
+            log_word(ppr_plaintext_pending);
+        }
+#endif
+        if(req_head_copy_error)
             return 0;
         if(is_ppr_verify_image && (req[0] != 1 || req[3] != 0x20000))
             return 0;
         if(is_ppr_verify_image
-        && copy_from_kernel(req + 8, regs[RDX] + 64,
+        && copy_from_kernel(req + 8, request_address + 64,
                             sizeof(req) - 64))
             return 0;
 
         uint64_t fih_read_size = 0;
         uint64_t sblock_input_size = 0;
         uint64_t ppr_request_malformed = 0;
-        uint64_t fih_output = 0;
-        uint64_t sblock_output = 0;
-        uint64_t icv_output = 0;
-        int ppr_plaintext_pending = is_ppr_verify_image
-                                  && current_ppr_plaintext_session_pending();
-        if(ppr_plaintext_pending)
+        int ppr_verify_plaintext_pending = is_ppr_verify_image
+                                         && ppr_plaintext_pending;
+        if(ppr_verify_plaintext_pending)
         {
-            fih_output = regs[ppr_abi->fih_reg];
-            icv_output = regs[ppr_abi->icv_reg];
-            if(ppr_abi->sblock_reg != PPR_REG_NONE)
-                sblock_output = regs[ppr_abi->sblock_reg];
-            else if(copy_u64_from_kernel(
-                        &sblock_output,
-                        regs[RBP] + ppr_abi->sblock_rbp_offset))
-                ppr_request_malformed |= 1ull << 5;
-            sblock_output = canonicalize_debug_kernel_pointer(sblock_output);
+#if KSTUFF_OBS
+            __atomic_store_n(&shared_area.metrics.ppr_verify_last_fih_pa,
+                             req[6], __ATOMIC_RELAXED);
+            __atomic_store_n(&shared_area.metrics.ppr_verify_last_sblock_pa,
+                             req[7], __ATOMIC_RELAXED);
+            __atomic_store_n(&shared_area.metrics.ppr_verify_last_icv_pa,
+                             req[4], __ATOMIC_RELAXED);
+#endif
 
             /* req[9] is { FIH output size, superblock output capacity }. */
             fih_read_size = (uint32_t)req[9];
@@ -1234,22 +1267,46 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
              * mailbox request.  The request itself gives the two exact
              * extents in req[9]; validate those and every range we write.
              */
-            if(!is_kernel_range(fih_output, PPR_FIH_SIZE))
+            /* req[4], req[6] and req[7] are the physical destinations which
+             * the real secure module writes.  They are stable across the
+             * supported kernels even when the caller keeps the corresponding
+             * virtual pointers in different (or optional) registers. */
+            int fih_range_valid = is_dmem_range(req[6], PPR_FIH_SIZE);
+            int sblock_range_valid = is_dmem_range(req[7], 0x3000);
+            int icv_range_valid = is_dmem_range(req[4], PPR_FIH_SIZE);
+            if(!fih_range_valid)
                 ppr_request_malformed |= 1ull << 0;
-            if(!is_kernel_range(sblock_output, 0x3000))
+            if(!sblock_range_valid)
                 ppr_request_malformed |= 1ull << 1;
-            if(!is_kernel_range(icv_output, PPR_FIH_SIZE))
+            if(!icv_range_valid)
                 ppr_request_malformed |= 1ull << 2;
             if(fih_read_size != PPR_FIH_SIZE)
                 ppr_request_malformed |= 1ull << 3;
             if(sblock_input_size != 0x3000)
                 ppr_request_malformed |= 1ull << 4;
+            if(fih_range_valid && sblock_range_valid && icv_range_valid
+            && (((req[4] | req[6] | req[7]) & (PPR_FIH_SIZE - 1))
+             || dmem_ranges_overlap(req[6], PPR_FIH_SIZE, req[7], 0x3000)
+             || dmem_ranges_overlap(req[6], PPR_FIH_SIZE,
+                                    req[4], PPR_FIH_SIZE)
+             || dmem_ranges_overlap(req[7], 0x3000,
+                                    req[4], PPR_FIH_SIZE)))
+                ppr_request_malformed |= 1ull << 5;
         }
         uint64_t latch_td = 0;
-        int ppr_plaintext_latched = ppr_plaintext_pending
+        int ppr_plaintext_latched = ppr_verify_plaintext_pending
                                   && !ppr_request_malformed
                                   && consume_current_ppr_plaintext_latch(
                                          &latch_td);
+#if KSTUFF_OBS
+        if(is_ppr_verify_image)
+        {
+            __atomic_store_n(&shared_area.metrics.ppr_verify_last_malformed,
+                             ppr_request_malformed, __ATOMIC_RELAXED);
+            __atomic_store_n(&shared_area.metrics.ppr_verify_last_latch_td,
+                             latch_td, __ATOMIC_RELAXED);
+        }
+#endif
 #if KSTUFF_OBS
         if(is_ppr_verify_image)
         {
@@ -1260,9 +1317,11 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
             log_word(ppr_plaintext_latched);
             log_word(ppr_request_malformed);
             log_word(__atomic_load_n(
-                &shared_area.ppr_plaintext_hook_stage, __ATOMIC_ACQUIRE));
+                &shared_area.metrics.ppr_plaintext_hook_stage,
+                __ATOMIC_RELAXED));
             log_word(__atomic_load_n(
-                &shared_area.ppr_plaintext_hook_value, __ATOMIC_ACQUIRE));
+                &shared_area.metrics.ppr_plaintext_hook_value,
+                __ATOMIC_RELAXED));
         }
 #endif
 
@@ -1342,32 +1401,31 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
                     copy_error = EBUSY;
             }
             if(!copy_error)
-                copy_error = zero_kernel_checked(fih_output, fih_read_size);
-            if(!copy_error)
-                copy_error = copy_to_kernel(fih_output, staging->fih,
-                                             sizeof(staging->fih));
+                memcpy(DMEM + req[6], staging->fih, sizeof(staging->fih));
             /*
              * Keep the FIH block geometry at +0x90 intact.  Clearing it makes
              * set_icv_table publish offset=0 and rejects metadata LBNs in the
              * kernel before they reach the A53 no-auth selector.
              */
             if(!copy_error)
-                copy_error = zero_kernel_checked(sblock_output,
-                                                  sblock_input_size);
-            if(!copy_error)
-                copy_error = copy_to_kernel(sblock_output, staging->superblock,
-                                             sblock_read_size);
+            {
+                memcpy(DMEM + req[7], staging->superblock,
+                       sblock_read_size);
+                memset(DMEM + req[7] + sblock_read_size, 0,
+                       sblock_input_size - sblock_read_size);
+            }
             /* Keep the staged, marker-bearing mode 0x0d on the stock path. */
             if(!copy_error)
-                copy_error = copy_u16_to_kernel(
-                    sblock_output + 0x1c, PPR_PFS_MODE_NATIVE_ENCRYPTED);
+                memcpy(DMEM + req[7] + 0x1c,
+                       &(const uint16_t){PPR_PFS_MODE_NATIVE_ENCRYPTED},
+                       sizeof(uint16_t));
             if(!copy_error)
-                copy_error = zero_kernel_checked(icv_output, fih_read_size);
+                memset(DMEM + req[4], 0, fih_read_size);
 #if KSTUFF_OBS
             log_word(0x50505256494d4737ull); /* "PPRVIM7" */
-            log_word(fih_output);
-            log_word(sblock_output);
-            log_word(icv_output);
+            log_word(req[6]);
+            log_word(req[7]);
+            log_word(req[4]);
             log_word(req[9]);
             log_word(ppr_request_malformed);
             log_word(copy_error);
@@ -1437,6 +1495,9 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
                 (void)rollback_current_ppr_plaintext_key_pair(latch_td);
                 return 0;
             }
+            /* Publish output data before the response that makes the caller
+             * treat those physical buffers as completed. */
+            __atomic_thread_fence(__ATOMIC_RELEASE);
             /*
              * Publish the mailbox response last.  If the stack-local write
              * fails, the stock secure-module call can still run without

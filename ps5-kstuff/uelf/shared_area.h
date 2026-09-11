@@ -352,6 +352,19 @@ struct kstuff_metrics
     uint64_t ppr_plaintext_g6_applied;
     uint64_t ppr_plaintext_g6_bad_initial_indices;
     uint64_t ppr_plaintext_g6_copy_failures;
+
+    /* Last exactly matched verifyImage request and ShellCore hook state. */
+    uint64_t ppr_verify_last_lr;
+    uint64_t ppr_verify_expected_lr;
+    uint64_t ppr_verify_last_req0;
+    uint64_t ppr_verify_last_req3;
+    uint64_t ppr_verify_last_fih_pa;
+    uint64_t ppr_verify_last_sblock_pa;
+    uint64_t ppr_verify_last_icv_pa;
+    uint64_t ppr_verify_last_malformed;
+    uint64_t ppr_verify_last_latch_td;
+    uint64_t ppr_plaintext_hook_stage;
+    uint64_t ppr_plaintext_hook_value;
 };
 
 struct kstuff_word_log_entry
@@ -419,11 +432,6 @@ struct shared_area_layout
      * halves permanently out of sync. */
     uint64_t ppr_plaintext_key_pairs_outstanding;
     uint64_t ppr_plaintext_key_pairs_reserved;
-    /* Last successfully completed stage in the ShellCore auto-mount hook.
-     * This remains visible after a failed secure-module request so the OBS
-     * mailbox trace can distinguish a missing hook from I/O/protocol failure. */
-    uint64_t ppr_plaintext_hook_stage;
-    uint64_t ppr_plaintext_hook_value;
 #if KSTUFF_OBS
     struct kstuff_metrics metrics;
     struct kstuff_word_log word_log;
@@ -449,15 +457,15 @@ extern struct shared_area_layout shared_area;
 #define METRIC_MAX(field, value) do { } while(0)
 #endif
 
-_Static_assert(sizeof(struct kstuff_metrics) == 2216, "unexpected metrics size");
+_Static_assert(sizeof(struct kstuff_metrics) == 2304, "unexpected metrics size");
 _Static_assert(sizeof(struct kstuff_word_log) == 264, "unexpected word log size");
 _Static_assert(sizeof(struct kstuff_ioctl_com_entry) == 24, "unexpected ioctl com entry size");
 _Static_assert(sizeof(struct kstuff_ioctl_com_table) == 3088, "unexpected ioctl com table size");
 _Static_assert(sizeof(struct kstuff_msg_log) == 504, "unexpected message log size");
-_Static_assert(sizeof(struct kstuff_snapshot) == 6088, "unexpected snapshot size");
+_Static_assert(sizeof(struct kstuff_snapshot) == 6176, "unexpected snapshot size");
 #if KSTUFF_OBS
-_Static_assert(sizeof(struct shared_area_layout) == 13848, "unexpected shared_area size");
+_Static_assert(sizeof(struct shared_area_layout) == 13920, "unexpected shared_area size");
 #else
-_Static_assert(sizeof(struct shared_area_layout) == 7776, "unexpected non-OBS shared_area size");
+_Static_assert(sizeof(struct shared_area_layout) == 7760, "unexpected non-OBS shared_area size");
 #endif
 _Static_assert(sizeof(struct shared_area_layout) <= SHARED_AREA_SIZE, "shared_area must fit in configured mapping");
