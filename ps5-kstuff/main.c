@@ -6,7 +6,6 @@
 #include <sys/syscall.h>
 #include <signal.h>
 #include <stdint.h>
-#include <stdarg.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -339,7 +338,7 @@ uint64_t virt2phys(uintptr_t addr, uint64_t* phys_limit, uint64_t dmap, uint64_t
         inner_pml &= (1ull << 52) - (1ull << 12);
         pml = inner_pml;
     }
-    //unreachable
+    return UINT64_MAX;
 }
 
 static uint64_t virt2phys_or_die(uintptr_t addr, uint64_t* phys_limit, uint64_t dmap, uint64_t pml)
@@ -401,7 +400,7 @@ int phys_copyin(uint64_t vaddr, const void* src, uint64_t sz, uint64_t dmap, uin
     while(sz)
     {
         phys = virt2phys(vaddr, &phys_end, dmap, pml);
-        if(phys == -1)
+        if(phys == UINT64_MAX)
             return -1;
         size_t chk = phys_end - phys;
         if(sz < chk)
@@ -422,7 +421,7 @@ static int phys_copyout(void* dst, uint64_t vaddr, uint64_t sz,
     while(sz)
     {
         phys = virt2phys(vaddr, &phys_end, dmap, pml);
-        if(phys == -1)
+        if(phys == UINT64_MAX)
             return -1;
         size_t chk = phys_end - phys;
         if(sz < chk)
@@ -444,6 +443,7 @@ uint64_t find_empty_pml4_index(int idx)
     for(int i = 256; i < 512; i++)
         if(!pml4[i] && !idx--)
             return i;
+    return UINT64_MAX;
 }
 
 enum { UELF_SHARED_AREA_OFFSET = 0x1f0000 };
@@ -539,14 +539,12 @@ int find_proc(const char* name)
     return -1;
 }
 
-static uint64_t remote_syscall(int pid, int nr, ...)
+static uint64_t remote_syscall(int pid, int nr,
+                               uint64_t arg0, uint64_t arg1,
+                               uint64_t arg2, uint64_t arg3,
+                               uint64_t arg4, uint64_t arg5)
 {
-    va_list va;
-    va_start(va, nr);
-    uint64_t args[6];
-    for(int i = 0; i < 6; i++)
-        args[i] = va_arg(va, uint64_t);
-    va_end(va);
+    uint64_t args[6] = {arg0, arg1, arg2, arg3, arg4, arg5};
     return kekcall(pid, nr, (uint64_t)args, 0, 0, 0, KEKCALL_REMOTE_SYSCALL);
 }
 
@@ -598,6 +596,8 @@ struct shellcore_patch
 
 struct shellcore_fpkg_offsets
 {
+    /* Retained as per-firmware provenance for the former direct-call/cave
+     * implementation. The scoped GOT wrappers intentionally do not use it. */
     uint64_t ppr_call;
     uint64_t ppr_cave;
     uint64_t ppr_cave_size;
@@ -814,11 +814,18 @@ extern const unsigned char ppr_mount_940_blob_start[];
 extern const unsigned char ppr_mount_940_blob_end[];
 
 #define SHELLCORE_PPR_SYSCALL_PLACEHOLDER 0x4C43535953525050ull
-#define SHELLCORE_PPR_CLOSE_PLACEHOLDER   0x534F4C43u
-#define SHELLCORE_PPR_OPEN_PLACEHOLDER    0x4E45504Fu
-#define SHELLCORE_PPR_PREAD_PLACEHOLDER   0x44414552u
-#define SHELLCORE_PPR_MOUNT_PLACEHOLDER   0x544E554Du
-#define SHELLCORE_PPR_RESERVED_SIZE       0x300
+#define SHELLCORE_PPR_CLOSE_PLACEHOLDER   0x3145534F4C435250ull
+#define SHELLCORE_PPR_OPEN_PLACEHOLDER    0x314E45504F525050ull
+#define SHELLCORE_PPR_PREAD_PLACEHOLDER   0x3144414552525050ull
+#define SHELLCORE_PPR_MOUNT_PLACEHOLDER   0x31544E554D525050ull
+#define SHELLCORE_GAME_MOUNT_PLACEHOLDER  0x31544E554D454D47ull
+#define SHELLCORE_GAME_UMOUNT_PLACEHOLDER 0x31544D55454D4147ull
+#define SHELLCORE_PPR_UMOUNT_PLACEHOLDER  0x31544D5552505050ull
+#define SHELLCORE_GAME_MOUNT_MARKER       0x314D47454B504746ull
+#define SHELLCORE_GAME_UMOUNT_MARKER      0x315547454B504746ull
+#define SHELLCORE_PPR_UMOUNT_MARKER       0x315550504B504746ull
+#define SHELLCORE_FPKG_WRAPPER_MAP_SIZE   0x4000
+#define SHELLCORE_LOCKED_PAGE_CAP         128
 
 static const char* shellcore_patch_failure;
 
@@ -828,222 +835,259 @@ static int shellcore_ppr_fail(const char* reason)
     return -1;
 }
 
-static int bytes_equal(const unsigned char* a, const unsigned char* b,
-                       size_t size)
+struct shellcore_locked_pages
 {
-    for(size_t i = 0; i < size; i++)
-        if(a[i] != b[i])
-            return 0;
-    return 1;
+    uint64_t pages[SHELLCORE_LOCKED_PAGE_CAP];
+    size_t count;
+};
+
+static int lock_shellcore_range(int pid, uint64_t address, uint64_t size,
+                                struct shellcore_locked_pages* locked)
+{
+    if(!size || address + size - 1 < address)
+        return -1;
+    const uint64_t page_mask = SHELLCORE_FPKG_WRAPPER_MAP_SIZE - 1;
+    uint64_t page = address & ~page_mask;
+    uint64_t last = (address + size - 1) & ~page_mask;
+    for(;; page += SHELLCORE_FPKG_WRAPPER_MAP_SIZE)
+    {
+        size_t i = 0;
+        while(i < locked->count && locked->pages[i] != page)
+            i++;
+        if(i == locked->count)
+        {
+            if(locked->count == SHELLCORE_LOCKED_PAGE_CAP
+            || remote_syscall(pid, SYS_mlock, page,
+                              SHELLCORE_FPKG_WRAPPER_MAP_SIZE,
+                              0, 0, 0, 0))
+                return -1;
+            locked->pages[locked->count++] = page;
+        }
+        if(page == last)
+            break;
+    }
+    return 0;
 }
 
-static int patch_shellcore_blob_call(unsigned char* blob, size_t blob_size,
-                                     uint32_t placeholder,
-                                     uint64_t cave_offset,
-                                     uint64_t target_offset,
-                                     size_t expected_count)
+static int replace_shellcore_blob_u64(unsigned char* blob, size_t blob_size,
+                                      uint64_t placeholder, uint64_t value,
+                                      size_t expected_count)
 {
     size_t count = 0;
-    for(size_t offset = 0; offset + sizeof(uint32_t) <= blob_size; offset++)
+    for(size_t offset = 0; offset + sizeof(uint64_t) <= blob_size; offset++)
     {
-        uint32_t value;
-        memcpy(&value, blob + offset, sizeof(value));
-        if(value != placeholder)
+        uint64_t current;
+        memcpy(&current, blob + offset, sizeof(current));
+        if(current != placeholder)
             continue;
-        if(!offset || blob[offset - 1] != 0xe8)
-            return -1;
-        uint64_t next_instruction = cave_offset + offset + sizeof(value);
-        int64_t wide_displacement = (int64_t)target_offset
-                                  - (int64_t)next_instruction;
-        int32_t displacement = (int32_t)wide_displacement;
-        if((int64_t)displacement != wide_displacement)
-            return -1;
-        memcpy(blob + offset, &displacement, sizeof(displacement));
+        memcpy(blob + offset, &value, sizeof(value));
         count++;
     }
     return count == expected_count ? 0 : -1;
 }
 
+static int find_shellcore_blob_entry(const unsigned char* blob,
+                                     size_t blob_size, uint64_t marker,
+                                     size_t* entry_offset)
+{
+    size_t count = 0;
+    for(size_t offset = 0; offset + sizeof(marker) <= blob_size; offset++)
+    {
+        uint64_t current;
+        memcpy(&current, blob + offset, sizeof(current));
+        if(current != marker)
+            continue;
+        *entry_offset = offset + sizeof(marker);
+        count++;
+    }
+    return count == 1 && *entry_offset < blob_size ? 0 : -1;
+}
+
+static int resolve_shellcore_plt(uint64_t shellcore_base,
+                                 uint64_t plt_offset,
+                                 uint64_t dmap, uint64_t cr3,
+                                 int pid,
+                                 struct shellcore_locked_pages* locked,
+                                 uint64_t* got, uint64_t* target)
+{
+    unsigned char plt[6];
+    if(!plt_offset
+    || lock_shellcore_range(pid, shellcore_base + plt_offset,
+                            sizeof(plt), locked)
+    || phys_copyout(plt, shellcore_base + plt_offset, sizeof(plt),
+                    dmap, cr3)
+    || plt[0] != 0xff || plt[1] != 0x25)
+        return -1;
+    int32_t displacement;
+    memcpy(&displacement, plt + 2, sizeof(displacement));
+    uint64_t resolved_got = shellcore_base + plt_offset
+                          + sizeof(plt) + displacement;
+    if(lock_shellcore_range(pid, resolved_got, sizeof(*target), locked)
+    || phys_copyout(target, resolved_got, sizeof(*target), dmap, cr3)
+    || *target < 0x10000 || *target >= 0x0000800000000000ull
+    /* An unresolved lazy slot points back to PLT+6. Redirecting that GOT
+     * entry would let the first resolver pass overwrite our wrapper. */
+    || *target == shellcore_base + plt_offset + sizeof(plt))
+        return -1;
+    if(got)
+        *got = resolved_got;
+    return 0;
+}
+
 static int install_shellcore_ppr_hook(
     int pid, uint64_t shellcore_base, uint64_t dmap, uint64_t cr3,
-    const struct shellcore_fpkg_offsets* sc)
+    const struct shellcore_fpkg_offsets* sc,
+    struct shellcore_locked_pages* locked)
 {
     const size_t blob_size = (size_t)(ppr_mount_940_blob_end
                                     - ppr_mount_940_blob_start);
-    const uint64_t call_offset = sc->ppr_call;
-    const uint64_t cave_offset = sc->ppr_cave;
-    const uint64_t cave_size = sc->ppr_cave_size;
-    unsigned char prepared_blob[SHELLCORE_PPR_RESERVED_SIZE];
-    unsigned char expected_call[5] = {0xe8};
-    unsigned char current_call[sizeof(expected_call)];
-    unsigned char call_patch[sizeof(expected_call)] = {0xe8};
-    unsigned char chunk[64];
-    int cave_is_zero = 1;
-    int cave_is_blob = 1;
+    static unsigned char prepared_blob[SHELLCORE_FPKG_WRAPPER_MAP_SIZE];
+    uint64_t helper_target[4];
+    uint64_t api_got[4], api_target[4];
+    uint64_t api_wrapper[4];
+    size_t game_mount_entry = 0;
+    size_t game_umount_entry = 0;
+    size_t ppr_umount_entry = 0;
 
-    if(!call_offset || !cave_offset || !cave_size
-    || !sc->close_plt || !sc->open_plt || !sc->pread_plt
+    if(!sc->close_plt || !sc->open_plt || !sc->pread_plt
     || !sc->mount_ppr_pkg_plt || !sc->getpid_plt)
-        return shellcore_ppr_fail("PPR hook: missing ShellCore offsets");
-    if(!blob_size || blob_size > sizeof(prepared_blob)
-    || cave_size < SHELLCORE_PPR_RESERVED_SIZE)
-        return shellcore_ppr_fail("PPR hook: invalid blob size");
+        return shellcore_ppr_fail("fpkg scope: missing ShellCore offsets");
+    if(!blob_size || blob_size > sizeof(prepared_blob))
+        return shellcore_ppr_fail("fpkg scope: invalid wrapper blob size");
 
-    unsigned char getpid_plt[6];
-    if(phys_copyout(chunk,
-                    shellcore_base + sc->getpid_plt,
-                    sizeof(getpid_plt), dmap, cr3))
-        return shellcore_ppr_fail("PPR hook: getpid PLT read failed");
-    memcpy(getpid_plt, chunk, sizeof(getpid_plt));
-    if(getpid_plt[0] != 0xff || getpid_plt[1] != 0x25)
-        return shellcore_ppr_fail("PPR hook: getpid PLT mismatch");
-    int32_t getpid_got_displacement;
-    memcpy(&getpid_got_displacement, getpid_plt + 2,
-           sizeof(getpid_got_displacement));
-    uint64_t getpid_got = shellcore_base + sc->getpid_plt
-                        + sizeof(getpid_plt) + getpid_got_displacement;
-    uint64_t getpid_address;
-    if(phys_copyout(&getpid_address, getpid_got, sizeof(getpid_address),
-                    dmap, cr3))
-        return shellcore_ppr_fail("PPR hook: getpid GOT read failed");
+    /* These four imports are consecutive pairs in every supported retail
+     * ShellCore. Validate every derived PLT before changing any state. */
+    const uint64_t api_plt[4] = {
+        sc->mount_ppr_pkg_plt - 0x40, /* sceFsMountGamePkg */
+        sc->mount_ppr_pkg_plt - 0x20, /* sceFsUmountGamePkg */
+        sc->mount_ppr_pkg_plt,        /* sceFsMountPprPkg */
+        sc->mount_ppr_pkg_plt + 0x20, /* sceFsUmountPprPkg */
+    };
+    const uint64_t helper_plt[4] = {
+        sc->close_plt, sc->open_plt, sc->pread_plt, sc->getpid_plt
+    };
+    if(sc->mount_ppr_pkg_plt < 0x40)
+        return shellcore_ppr_fail("fpkg scope: invalid API PLT layout");
+    for(size_t i = 0; i < 4; i++)
+    {
+        if(resolve_shellcore_plt(shellcore_base, helper_plt[i], dmap, cr3,
+                                 pid, locked,
+                                 0, &helper_target[i]))
+            return shellcore_ppr_fail("fpkg scope: helper PLT mismatch");
+        if(resolve_shellcore_plt(shellcore_base, api_plt[i], dmap, cr3,
+                                 pid, locked,
+                                 &api_got[i], &api_target[i]))
+            return shellcore_ppr_fail("fpkg scope: package API PLT mismatch");
+    }
+
+    uint64_t getpid_address = helper_target[3];
     uint64_t syscall_target = getpid_address + 7;
     if(syscall_target < getpid_address)
-        return shellcore_ppr_fail("PPR hook: syscall address overflow");
-
-    static const unsigned char expected_syscall_target[] = {
-        0x49, 0x89, 0xCA, 0x0F, 0x05, 0x72, 0x01, 0xC3
-    };
-    if(remote_syscall(pid, SYS_mlock, syscall_target,
-                      (uint64_t)sizeof(expected_syscall_target), 0, 0, 0, 0)
-    || phys_copyout(chunk, syscall_target, sizeof(expected_syscall_target),
-                    dmap, cr3)
-    || !bytes_equal(chunk, expected_syscall_target,
-                    sizeof(expected_syscall_target)))
-        return shellcore_ppr_fail("PPR hook: syscall trampoline mismatch");
+        return shellcore_ppr_fail("fpkg scope: syscall address overflow");
 
     memcpy(prepared_blob, ppr_mount_940_blob_start, blob_size);
-    size_t syscall_placeholder_count = 0;
-    for(size_t offset = 0; offset + sizeof(uint64_t) <= blob_size; offset++)
+    if(replace_shellcore_blob_u64(prepared_blob, blob_size,
+                                  SHELLCORE_PPR_SYSCALL_PLACEHOLDER,
+                                  syscall_target, 1)
+    || replace_shellcore_blob_u64(prepared_blob, blob_size,
+                                  SHELLCORE_PPR_CLOSE_PLACEHOLDER,
+                                  helper_target[0], 2)
+    || replace_shellcore_blob_u64(prepared_blob, blob_size,
+                                  SHELLCORE_PPR_OPEN_PLACEHOLDER,
+                                  helper_target[1], 1)
+    || replace_shellcore_blob_u64(prepared_blob, blob_size,
+                                  SHELLCORE_PPR_PREAD_PLACEHOLDER,
+                                  helper_target[2], 1)
+    || replace_shellcore_blob_u64(prepared_blob, blob_size,
+                                  SHELLCORE_PPR_MOUNT_PLACEHOLDER,
+                                  api_target[2], 1)
+    || replace_shellcore_blob_u64(prepared_blob, blob_size,
+                                  SHELLCORE_GAME_MOUNT_PLACEHOLDER,
+                                  api_target[0], 1)
+    || replace_shellcore_blob_u64(prepared_blob, blob_size,
+                                  SHELLCORE_GAME_UMOUNT_PLACEHOLDER,
+                                  api_target[1], 1)
+    || replace_shellcore_blob_u64(prepared_blob, blob_size,
+                                  SHELLCORE_PPR_UMOUNT_PLACEHOLDER,
+                                  api_target[3], 1)
+    || find_shellcore_blob_entry(prepared_blob, blob_size,
+                                 SHELLCORE_GAME_MOUNT_MARKER,
+                                 &game_mount_entry)
+    || find_shellcore_blob_entry(prepared_blob, blob_size,
+                                 SHELLCORE_GAME_UMOUNT_MARKER,
+                                 &game_umount_entry)
+    || find_shellcore_blob_entry(prepared_blob, blob_size,
+                                 SHELLCORE_PPR_UMOUNT_MARKER,
+                                 &ppr_umount_entry))
+        return shellcore_ppr_fail("fpkg scope: wrapper placeholders mismatch");
+
+    uint64_t wrapper_base = remote_syscall(
+        pid, SYS_mmap, 0, SHELLCORE_FPKG_WRAPPER_MAP_SIZE,
+        PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON,
+        (uint64_t)-1, 0);
+    if(wrapper_base < 0x10000 || wrapper_base >= 0x0000800000000000ull)
+        return shellcore_ppr_fail("fpkg scope: wrapper mmap failed");
+    if(remote_syscall(pid, SYS_mlock, wrapper_base,
+                      SHELLCORE_FPKG_WRAPPER_MAP_SIZE, 0, 0, 0, 0))
     {
-        uint64_t value;
-        memcpy(&value, prepared_blob + offset, sizeof(value));
-        if(value != SHELLCORE_PPR_SYSCALL_PLACEHOLDER)
-            continue;
-        memcpy(prepared_blob + offset, &syscall_target,
-               sizeof(syscall_target));
-        syscall_placeholder_count++;
+        remote_syscall(pid, SYS_munmap, wrapper_base,
+                       SHELLCORE_FPKG_WRAPPER_MAP_SIZE, 0, 0, 0, 0);
+        return shellcore_ppr_fail("fpkg scope: wrapper mlock failed");
     }
-    if(syscall_placeholder_count != 1)
-        return shellcore_ppr_fail("PPR hook: syscall placeholder mismatch");
-
-    if(patch_shellcore_blob_call(prepared_blob, blob_size,
-                                 SHELLCORE_PPR_CLOSE_PLACEHOLDER,
-                                 cave_offset, sc->close_plt, 2)
-    || patch_shellcore_blob_call(prepared_blob, blob_size,
-                                 SHELLCORE_PPR_OPEN_PLACEHOLDER,
-                                 cave_offset, sc->open_plt, 1)
-    || patch_shellcore_blob_call(prepared_blob, blob_size,
-                                 SHELLCORE_PPR_PREAD_PLACEHOLDER,
-                                 cave_offset, sc->pread_plt, 1)
-    || patch_shellcore_blob_call(prepared_blob, blob_size,
-                                 SHELLCORE_PPR_MOUNT_PLACEHOLDER,
-                                 cave_offset,
-                                 sc->mount_ppr_pkg_plt, 1))
-        return shellcore_ppr_fail("PPR hook: call placeholder mismatch");
-
-    int64_t wide_displacement = (int64_t)cave_offset
-                              - (int64_t)(call_offset + 5);
-    int32_t displacement = (int32_t)wide_displacement;
-    if((int64_t)displacement != wide_displacement)
-        return shellcore_ppr_fail("PPR hook: call displacement overflow");
-    memcpy(call_patch + 1, &displacement, sizeof(displacement));
-
-    wide_displacement = (int64_t)sc->mount_ppr_pkg_plt
-                      - (int64_t)(call_offset + 5);
-    displacement = (int32_t)wide_displacement;
-    if((int64_t)displacement != wide_displacement)
-        return shellcore_ppr_fail("PPR hook: original displacement overflow");
-    memcpy(expected_call + 1, &displacement, sizeof(displacement));
-
-    /* This also proves that the page-rounded tail beyond p_memsz is present
-     * in the live ShellCore vm_map before any bytes are changed. */
-    if(remote_syscall(pid, SYS_mlock,
-                      shellcore_base + cave_offset,
-                      cave_size, 0, 0, 0, 0))
-        return shellcore_ppr_fail("PPR hook: cave mlock failed");
-
-    if(phys_copyout(current_call,
-                    shellcore_base + call_offset,
-                    sizeof(current_call), dmap, cr3))
-        return shellcore_ppr_fail("PPR hook: call-site read failed");
-    int call_is_original = bytes_equal(current_call, expected_call,
-                                       sizeof(expected_call));
-    int call_is_hook = bytes_equal(current_call, call_patch,
-                                   sizeof(call_patch));
-    if(!call_is_original && !call_is_hook)
-        return shellcore_ppr_fail("PPR hook: call-site mismatch");
-
-    /* Own only the fixed prefix. ShadowMount may use the remaining executable
-     * tail, so reload validation must deliberately ignore it. */
-    for(size_t offset = 0; offset < SHELLCORE_PPR_RESERVED_SIZE;
-        offset += sizeof(chunk))
+    if(phys_copyin(wrapper_base, prepared_blob, blob_size, dmap, cr3))
     {
-        size_t size = SHELLCORE_PPR_RESERVED_SIZE - offset;
-        if(size > sizeof(chunk))
-            size = sizeof(chunk);
-        if(phys_copyout(chunk,
-                        shellcore_base + cave_offset + offset,
-                        size, dmap, cr3))
-            return shellcore_ppr_fail("PPR hook: cave read failed");
-        for(size_t i = 0; i < size; i++)
+        remote_syscall(pid, SYS_munmap, wrapper_base,
+                       SHELLCORE_FPKG_WRAPPER_MAP_SIZE, 0, 0, 0, 0);
+        return shellcore_ppr_fail("fpkg scope: wrapper write failed");
+    }
+    if(remote_syscall(pid, SYS_mprotect, wrapper_base,
+                      SHELLCORE_FPKG_WRAPPER_MAP_SIZE,
+                      PROT_READ | PROT_EXEC, 0, 0, 0))
+    {
+        remote_syscall(pid, SYS_munmap, wrapper_base,
+                       SHELLCORE_FPKG_WRAPPER_MAP_SIZE, 0, 0, 0, 0);
+        return shellcore_ppr_fail("fpkg scope: wrapper mprotect failed");
+    }
+
+    api_wrapper[0] = wrapper_base + game_mount_entry;
+    api_wrapper[1] = wrapper_base + game_umount_entry;
+    api_wrapper[2] = wrapper_base;
+    api_wrapper[3] = wrapper_base + ppr_umount_entry;
+    size_t installed = 0;
+    for(; installed < 4; installed++)
+    {
+        if(phys_copyin(api_got[installed], &api_wrapper[installed],
+                       sizeof(api_wrapper[installed]), dmap, cr3))
+            break;
+        uint64_t current;
+        if(phys_copyout(&current, api_got[installed], sizeof(current),
+                        dmap, cr3)
+        || current != api_wrapper[installed])
+            break;
+    }
+    if(installed != 4)
+    {
+        int rollback_failed = 0;
+        size_t touched = installed + 1;
+        if(touched > 4)
+            touched = 4;
+        for(size_t i = 0; i < touched; i++)
         {
-            if(chunk[i])
-                cave_is_zero = 0;
-            unsigned char expected = offset + i < blob_size
-                                   ? prepared_blob[offset + i]
-                                   : 0;
-            if(chunk[i] != expected)
-                cave_is_blob = 0;
+            uint64_t current = 0;
+            if(phys_copyin(api_got[i], &api_target[i],
+                           sizeof(api_target[i]), dmap, cr3)
+            || phys_copyout(&current, api_got[i], sizeof(current), dmap, cr3)
+            || current != api_target[i])
+                rollback_failed = 1;
         }
+        /* Never unmap code while even one GOT slot may still reference it. */
+        if(!rollback_failed)
+            remote_syscall(pid, SYS_munmap, wrapper_base,
+                           SHELLCORE_FPKG_WRAPPER_MAP_SIZE, 0, 0, 0, 0);
+        return shellcore_ppr_fail(
+            rollback_failed ? "fpkg scope: API GOT rollback failed"
+                            : "fpkg scope: API GOT install failed");
     }
-
-    if(call_is_hook)
-        return cave_is_blob ? 0
-             : shellcore_ppr_fail("PPR hook: resident blob mismatch");
-    if(!cave_is_zero && !cave_is_blob)
-        return shellcore_ppr_fail("PPR hook: cave is occupied");
-
-    if(cave_is_zero)
-    {
-        if(phys_copyin(shellcore_base + cave_offset,
-                       prepared_blob, blob_size, dmap, cr3))
-            return shellcore_ppr_fail("PPR hook: cave write failed");
-
-        /* Verify the resident blob before making it reachable. */
-        for(size_t offset = 0; offset < blob_size; offset += sizeof(chunk))
-        {
-            size_t size = blob_size - offset;
-            if(size > sizeof(chunk))
-                size = sizeof(chunk);
-            if(phys_copyout(
-                    chunk,
-                    shellcore_base + cave_offset + offset,
-                    size, dmap, cr3)
-            || !bytes_equal(chunk, prepared_blob + offset, size))
-                return shellcore_ppr_fail("PPR hook: cave verify failed");
-        }
-    }
-
-    /* Install the call-site redirection only after the blob is verified. */
-    if(phys_copyin(shellcore_base + call_offset,
-                   call_patch, sizeof(call_patch), dmap, cr3))
-        return shellcore_ppr_fail("PPR hook: call-site write failed");
-
-    if(phys_copyout(current_call,
-                    shellcore_base + call_offset,
-                    sizeof(current_call), dmap, cr3)
-    || !bytes_equal(current_call, call_patch, sizeof(call_patch)))
-        return shellcore_ppr_fail("PPR hook: call-site verify failed");
     return 0;
 }
 
@@ -1148,18 +1192,21 @@ static int patch_shellcore(const struct shellcore_patch* patches, size_t n_patch
     int pid = find_proc("SceShellCore");
     struct module_info_ex mod_info;
     mod_info.st_size = sizeof(mod_info);
-    if (remote_syscall(pid, SYS_dynlib_get_info_ex, 0, 0, &mod_info))
+    if (remote_syscall(pid, SYS_dynlib_get_info_ex, 0, 0,
+                       (uint64_t)&mod_info, 0, 0, 0))
         return -1;
     uint64_t shellcore_base = mod_info.eh_frame_hdr_addr - eh_frame_offset;
-    uint64_t textsize = mod_info.segments[0].size;
-    if (remote_syscall(pid, SYS_mlock, shellcore_base, textsize))
-        return -1;
     uint64_t cr3, dmap;
     if(get_proc_cr3(pid, &cr3, &dmap))
         return -1;
 
-    for(int i = 0; i < n_patches; i++)
+    struct shellcore_locked_pages locked = {0};
+
+    for(size_t i = 0; i < n_patches; i++)
     {
+        if(lock_shellcore_range(pid, shellcore_base + patches[i].offset,
+                                patches[i].sz, &locked))
+            return -1;
         if(phys_copyin(shellcore_base + patches[i].offset, patches[i].data, patches[i].sz, dmap, cr3))
             return -1;
     }
@@ -1169,7 +1216,7 @@ static int patch_shellcore(const struct shellcore_patch* patches, size_t n_patch
             get_shellcore_fpkg_offsets();
         if(fpkg_offsets
         && install_shellcore_ppr_hook(pid, shellcore_base, dmap, cr3,
-                                      fpkg_offsets))
+                                      fpkg_offsets, &locked))
             return -1;
     }
     return 0;
@@ -1482,17 +1529,19 @@ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
         SYS_get_sdk_compiled_version,
         SYS_get_ppr_sdk_compiled_version,
         SYS_getppid,
-        SYS_nmount,
-        SYS_unmount,
         SYS_mprotect,
         SYS_mdbg_call
     };
     static const int num_syscalls_to_hook_for_ps5 = sizeof(syscalls_to_hook_for_ps5) / sizeof(syscalls_to_hook_for_ps5[0]);
 
-    // ioctl is only used for the npdrm hook, which is only used by shellcore, avoid the overhead of hooking every ioctl for every proc
+    // Package mount interception is scoped to ShellCore. The four public
+    // sceFs*GamePkg/sceFs*PprPkg wrappers further gate the individual calls.
+    // ioctl is likewise only used by ShellCore's npdrm hook.
     // TODO: handle npdrm hook in userland?
     static const int extra_syscalls_to_hook_for_shellcore[] = {
-        SYS_ioctl
+        SYS_ioctl,
+        SYS_nmount,
+        SYS_unmount
     };
     static const int num_extra_syscalls_to_hook_for_shellcore = sizeof(extra_syscalls_to_hook_for_shellcore) / sizeof(extra_syscalls_to_hook_for_shellcore[0]);
 

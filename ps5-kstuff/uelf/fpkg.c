@@ -41,6 +41,10 @@ enum {
     PPR_CONTROL_WRITE = 2,
     PPR_CONTROL_CHECK = 3,
     PPR_CONTROL_TRACE = 10,
+    PPR_CONTROL_SCOPE_ENTER = 11,
+    PPR_CONTROL_SCOPE_LEAVE = 12,
+    FPKG_SCOPE_KIND_MASK = 0xff,
+    FPKG_SCOPE_DEPTH_SHIFT = 32,
 };
 
 /*
@@ -339,6 +343,112 @@ static int get_current_ppr_thread(uint64_t* td)
     return (*td >> 48) == 0xffff ? 0 : EFAULT;
 }
 
+static uint64_t fpkg_scope_for_thread(uint64_t td)
+{
+    for(size_t i = 0; i < SHARED_FPKG_SCOPE_SLOTS; i++)
+    {
+        struct kstuff_fpkg_scope* slot = &shared_area.fpkg_scopes[i];
+        if(__atomic_load_n(&slot->td, __ATOMIC_ACQUIRE) == td)
+            return __atomic_load_n(&slot->state, __ATOMIC_ACQUIRE);
+    }
+    return 0;
+}
+
+static int enter_fpkg_scope(uint64_t td, uint64_t kind)
+{
+    if(kind < KSTUFF_FPKG_SCOPE_GAME_MOUNT
+    || kind > KSTUFF_FPKG_SCOPE_PPR_UNMOUNT)
+        return EINVAL;
+
+    for(size_t i = 0; i < SHARED_FPKG_SCOPE_SLOTS; i++)
+    {
+        struct kstuff_fpkg_scope* slot = &shared_area.fpkg_scopes[i];
+        uint64_t owner = __atomic_load_n(&slot->td, __ATOMIC_ACQUIRE);
+        if(owner == td)
+        {
+            uint64_t old = __atomic_load_n(&slot->state, __ATOMIC_ACQUIRE);
+            for(;;)
+            {
+                if((old & FPKG_SCOPE_KIND_MASK) != kind)
+                    return EBUSY;
+                uint64_t depth = old >> FPKG_SCOPE_DEPTH_SHIFT;
+                if(!depth || depth == UINT32_MAX)
+                    return EBUSY;
+                uint64_t next = old + (1ull << FPKG_SCOPE_DEPTH_SHIFT);
+                if(__atomic_compare_exchange_n(&slot->state, &old, next, 0,
+                                               __ATOMIC_ACQ_REL,
+                                               __ATOMIC_ACQUIRE))
+                    return 0;
+            }
+        }
+        if(!owner)
+        {
+            uint64_t expected = 0;
+            if(!__atomic_compare_exchange_n(&slot->td, &expected, td, 0,
+                                            __ATOMIC_ACQ_REL,
+                                            __ATOMIC_ACQUIRE))
+                continue;
+            __atomic_store_n(&slot->state,
+                             (1ull << FPKG_SCOPE_DEPTH_SHIFT) | kind,
+                             __ATOMIC_RELEASE);
+            return 0;
+        }
+    }
+    return EBUSY;
+}
+
+static int leave_fpkg_scope(uint64_t td, uint64_t kind)
+{
+    for(size_t i = 0; i < SHARED_FPKG_SCOPE_SLOTS; i++)
+    {
+        struct kstuff_fpkg_scope* slot = &shared_area.fpkg_scopes[i];
+        if(__atomic_load_n(&slot->td, __ATOMIC_ACQUIRE) != td)
+            continue;
+        uint64_t old = __atomic_load_n(&slot->state, __ATOMIC_ACQUIRE);
+        for(;;)
+        {
+            uint64_t depth = old >> FPKG_SCOPE_DEPTH_SHIFT;
+            if((old & FPKG_SCOPE_KIND_MASK) != kind || !depth)
+                return EPERM;
+            if(depth > 1)
+            {
+                uint64_t next = old - (1ull << FPKG_SCOPE_DEPTH_SHIFT);
+                if(__atomic_compare_exchange_n(&slot->state, &old, next, 0,
+                                               __ATOMIC_ACQ_REL,
+                                               __ATOMIC_ACQUIRE))
+                    return 0;
+                continue;
+            }
+            if(!__atomic_compare_exchange_n(&slot->state, &old, 0, 0,
+                                            __ATOMIC_ACQ_REL,
+                                            __ATOMIC_ACQUIRE))
+                continue;
+            __atomic_store_n(&slot->td, 0, __ATOMIC_RELEASE);
+            return 0;
+        }
+    }
+    return EPERM;
+}
+
+int current_fpkg_syscall_scope(int is_nmount, int* is_ppr)
+{
+    uint64_t td;
+    if(get_current_ppr_thread(&td))
+        return 0;
+    uint64_t kind = fpkg_scope_for_thread(td) & FPKG_SCOPE_KIND_MASK;
+    int allowed = is_nmount
+                ? (kind == KSTUFF_FPKG_SCOPE_GAME_MOUNT
+                || kind == KSTUFF_FPKG_SCOPE_PPR_MOUNT)
+                : (kind == KSTUFF_FPKG_SCOPE_GAME_UNMOUNT
+                || kind == KSTUFF_FPKG_SCOPE_PPR_UNMOUNT);
+    if(!allowed)
+        return 0;
+    if(is_ppr)
+        *is_ppr = kind == KSTUFF_FPKG_SCOPE_PPR_MOUNT
+               || kind == KSTUFF_FPKG_SCOPE_PPR_UNMOUNT;
+    return 1;
+}
+
 static void release_ppr_plaintext_staging(uint64_t td)
 {
     struct kstuff_ppr_plaintext_staging* staging =
@@ -618,6 +728,18 @@ int control_ppr_plaintext_request(uint64_t magic, uint64_t mode,
     uint64_t td = 0;
     if(get_current_ppr_thread(&td))
         return EFAULT;
+    if(mode == PPR_CONTROL_SCOPE_ENTER
+    || mode == PPR_CONTROL_SCOPE_LEAVE)
+    {
+        if(arg0 != PPR_PLAINTEXT_PROTOCOL_VERSION)
+            return EINVAL;
+        return mode == PPR_CONTROL_SCOPE_ENTER
+             ? enter_fpkg_scope(td, arg2)
+             : leave_fpkg_scope(td, arg2);
+    }
+    if((fpkg_scope_for_thread(td) & FPKG_SCOPE_KIND_MASK)
+                                      != KSTUFF_FPKG_SCOPE_PPR_MOUNT)
+        return EPERM;
     if(mode == 0)
     {
         if(arg0 != PPR_PLAINTEXT_PROTOCOL_VERSION)
@@ -1647,7 +1769,7 @@ void handle_fpkg_trap(uint64_t* regs, uint32_t trapno)
     }
 }
 
-void handle_fpkg_syscall(uint64_t* regs, int is_nmount)
+void handle_fpkg_syscall(uint64_t* regs, int is_nmount, int is_ppr)
 {
     uint64_t dbgregs_for_fpkg[6] = {
         (uint64_t)sceSblServiceMailbox, 0, 0, 0,
@@ -1659,11 +1781,12 @@ void handle_fpkg_syscall(uint64_t* regs, int is_nmount)
      * thread that explicitly owns an ARMED/ACTIVE PLAINTEXT_NOAUTH session;
      * verifyImage changes ARMED to ACTIVE later during this syscall.
      */
-    int enable_ppr_plaintext_traps = is_nmount
+    int enable_ppr_plaintext_traps = is_ppr && is_nmount
                                   && current_ppr_plaintext_session_pending();
     /* Exact firmware profiles make this pure address arithmetic.  No kernel
      * text is read on ARM, mount, unmount, or #DB paths. */
-    int cleanup_pending = !is_nmount && has_ppr_plaintext_key_pair();
+    int cleanup_pending = is_ppr && !is_nmount
+                        && has_ppr_plaintext_key_pair();
     uint64_t put_cmac = cleanup_pending
                       ? ppr_pfs_plaintext_put_cmac_call() : 0;
     uint64_t put_xts = cleanup_pending

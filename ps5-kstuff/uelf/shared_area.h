@@ -9,6 +9,7 @@
 enum {
     SHARED_FAKE_KEY_SLOTS = 63,
     SHARED_PPR_PLAINTEXT_LATCH_SLOTS = 8,
+    SHARED_FPKG_SCOPE_SLOTS = 8,
     SHARED_LOG_WORD_CAP = 16,
     SHARED_LOG_MSG_CAP = 488,
     SHARED_IOCTL_COM_TRACK_CAP = 128,
@@ -21,6 +22,12 @@ enum { SHARED_AREA_SIZE = 8192 };
 #endif
 
 struct kstuff_ppr_plaintext_latch
+{
+    uint64_t td;
+    uint64_t state;
+};
+
+struct kstuff_fpkg_scope
 {
     uint64_t td;
     uint64_t state;
@@ -429,6 +436,9 @@ struct shared_area_layout
     uint8_t key_data[SHARED_FAKE_KEY_SLOTS][32];
     struct kstuff_ppr_plaintext_latch
         ppr_plaintext_latches[SHARED_PPR_PLAINTEXT_LATCH_SLOTS];
+    /* Only ShellCore's four public game-package wrappers create these
+     * per-thread scopes. nmount/unmount remain completely stock elsewhere. */
+    struct kstuff_fpkg_scope fpkg_scopes[SHARED_FPKG_SCOPE_SLOTS];
     struct kstuff_ppr_plaintext_staging ppr_plaintext_staging;
     /* Synthetic FE/FF indices identify retained FD/FC handles.  They survive
      * cleanup_a53io_pkg_keys and end at the matching sceSblPfsClearKey pair
@@ -470,8 +480,8 @@ _Static_assert(sizeof(struct kstuff_ioctl_com_table) == 3088, "unexpected ioctl 
 _Static_assert(sizeof(struct kstuff_msg_log) == 504, "unexpected message log size");
 _Static_assert(sizeof(struct kstuff_snapshot) == 6192, "unexpected snapshot size");
 #if KSTUFF_OBS
-_Static_assert(sizeof(struct shared_area_layout) == 13928, "unexpected shared_area size");
+_Static_assert(sizeof(struct shared_area_layout) == 14056, "unexpected shared_area size");
 #else
-_Static_assert(sizeof(struct shared_area_layout) == 7760, "unexpected non-OBS shared_area size");
+_Static_assert(sizeof(struct shared_area_layout) == 7888, "unexpected non-OBS shared_area size");
 #endif
 _Static_assert(sizeof(struct shared_area_layout) <= SHARED_AREA_SIZE, "shared_area must fit in configured mapping");

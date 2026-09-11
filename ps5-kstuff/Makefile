@@ -58,7 +58,7 @@ structs.h: structs.inc
 
 shellcore_hook/ppr_mount_940.bin: shellcore_hook/ppr_mount_940.asm $(BUILD_CONFIG)
 	yasm -DKSTUFF_OBS=$(KSTUFF_OBS) -f bin $< -o $@
-	@test $$(wc -c < $@) -le $$((0x300)) || (echo "ppr_mount_940.bin exceeds the reserved kstuff cave prefix"; rm -f $@; false)
+	@test $$(wc -c < $@) -le $$((0x4000)) || (echo "ppr_mount_940.bin exceeds the ShellCore wrapper mapping"; rm -f $@; false)
 
 shellcore_hook/ppr_mount_940_blob.o: shellcore_hook/ppr_mount_940_blob.asm shellcore_hook/ppr_mount_940.bin
 	yasm -f elf64 $< -o $@

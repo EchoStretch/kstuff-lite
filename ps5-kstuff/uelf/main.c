@@ -98,18 +98,24 @@ void handle_syscall(uint64_t* regs, int allow_kekcall)
     {
         if(!runtime_syscall_hook_enabled(KSTUFF_RUNTIME_HOOK_NMOUNT))
             RETURN_HANDLE_SYSCALL();
+        int is_ppr = 0;
+        if(!current_fpkg_syscall_scope(1, &is_ppr))
+            RETURN_HANDLE_SYSCALL();
         METRIC_INC(syscall_fpkg_dispatches);
         observe_syscall_armed(KSTUFF_SYSCALL_NMOUNT);
-        handle_fpkg_syscall(regs, 1);
+        handle_fpkg_syscall(regs, 1, is_ppr);
         RETURN_HANDLE_SYSCALL();
     }
     if(IS(unmount))
     {
         if(!runtime_syscall_hook_enabled(KSTUFF_RUNTIME_HOOK_UNMOUNT))
             RETURN_HANDLE_SYSCALL();
+        int is_ppr = 0;
+        if(!current_fpkg_syscall_scope(0, &is_ppr))
+            RETURN_HANDLE_SYSCALL();
         METRIC_INC(syscall_fpkg_dispatches);
         observe_syscall_armed(KSTUFF_SYSCALL_UNMOUNT);
-        handle_fpkg_syscall(regs, 0);
+        handle_fpkg_syscall(regs, 0, is_ppr);
         RETURN_HANDLE_SYSCALL();
     }
     if(IS(execve))
