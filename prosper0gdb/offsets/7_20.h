@@ -75,6 +75,18 @@ DEF(cr0_clear_store, -0x583015)
 DEF(cr0_write_ret, -0x549343)
 DEF(store_rax_rdi, -0xA12CEE)
 
+
+// PPR/fPKG offsets verified against the matching kernel image.
+DEF(ppr_pfs_get_xts_index, -0x12b170)
+DEF(ppr_pfs_get_cmac_index, -0x12b010)
+DEF(ppr_pfs_get_xts_return, -0x8a76a2)
+DEF(ppr_pfs_get_cmac_return, -0x8a7654)
+DEF(ppr_pfs_cleanup_keys, -0x8af340)
+DEF(ppr_pfs_clear_key_missing, -0x98594b)
+DEF(sceSblServiceMailbox_lr_verifyImage, -0x986d8f)
+DEF(ppr_pfs_verify_image_no_key_success, -0x986a53)
+
+
 // non data-relative offsets
 DEF(p_sysent, 0x9F8)
 #include "offset_list.txt"

@@ -12,6 +12,8 @@
 #include <ps5/kernel.h>
 #include <ps5/mdbg.h>
 
+#include "utils.h"
+
 #define LOG_PUTS(s)   \
     {                 \
         puts(s);      \
@@ -328,7 +330,10 @@ static void *shellui_patch_thread(void *arg) {
         }
 
         LOG_PRINTF("Patching new shellui instance (pid %d)...\n", new_pid);
-        patch_shellui(new_pid);
+        if (patch_shellui(new_pid) == 0) {
+            klog_printf("[kstuff.elf] resume recovery completed\n");
+            notify("kstuff restored after rest mode");
+        }
     }
 
     __builtin_unreachable();

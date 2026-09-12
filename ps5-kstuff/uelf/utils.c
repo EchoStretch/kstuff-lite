@@ -665,9 +665,11 @@ extern char cpu_switch[];
 extern char rdmsr_start[];
 extern char rdmsr_end[];
 extern char wrmsr_ret[];
+extern char mov_rax_cr0[];
 extern char cr0_load[];
 extern char cr0_clear_store[];
 extern char cr0_write_ret[];
+extern char store_rax_rdi[];
 extern char pop_all_iret[];
 extern char doreti_iret[];
 extern char syscall_after[];
@@ -831,6 +833,37 @@ static int is_sane_cr0(uint64_t cr0)
         && (cr0 & required_bits) == required_bits;
 }
 
+static int cr0_chain_available(void)
+{
+    return (uint64_t)cr0_load > 0x1000
+        && (uint64_t)cr0_clear_store > 0x1000
+        && (uint64_t)store_rax_rdi > 0x1000;
+}
+
+static int read_cr0_checked(uint64_t* cr0)
+{
+    METRIC_INC(cr0_read_calls);
+    uint64_t regs[NREGS] = {
+        [RIP] = (uint64_t)mov_rax_cr0, 0x20, 0x102, 0, 0,
+    };
+    return run_gadget_capture_rax_checked(regs, cr0) ? EFAULT : 0;
+}
+
+static int read_cr0_clear_ts_legacy_checked(uint64_t* cr0)
+{
+    if(read_cr0_checked(cr0))
+        return EFAULT;
+    if(!is_sane_cr0(*cr0))
+        return EFAULT;
+    if(!(*cr0 & 8))
+    {
+        METRIC_INC(cr0_ts_already_clear);
+        METRIC_INC(cr0_clear_elided_transitions);
+        return 0;
+    }
+    return write_cr0_checked(*cr0 & ~8ull);
+}
+
 static uint64_t cr0_enter_hook_address;
 static uint64_t cr0_exit_hook_address;
 
@@ -928,7 +961,9 @@ int read_cr0_clear_ts_checked(uint64_t* cr0)
                 start_cycles); \
     return _result; \
 } while(0)
-    RETURN_CR0_READ_CLEAR(read_cr0_clear_ts_chain_checked(cr0));
+    if(cr0_chain_available())
+        RETURN_CR0_READ_CLEAR(read_cr0_clear_ts_chain_checked(cr0));
+    RETURN_CR0_READ_CLEAR(read_cr0_clear_ts_legacy_checked(cr0));
 #undef RETURN_CR0_READ_CLEAR
 }
 
@@ -942,6 +977,17 @@ int write_cr0_checked(uint64_t cr0)
     return run_gadget_no_result_checked(regs);
 }
 
+static int write_cr0_preserving_trap_frame_checked(uint64_t cr0)
+{
+    uint64_t outer_regs[NREGS];
+    if(copy_from_trap_frame_cached(outer_regs, sizeof(outer_regs)))
+        return EFAULT;
+    int result = write_cr0_checked(cr0);
+    if(copy_to_trap_frame_cached(outer_regs, sizeof(outer_regs)))
+        return EFAULT;
+    return result;
+}
+
 int defer_cr0_restore_checked(uint64_t cr0)
 {
     METRIC_INC(cr0_restore_calls);
@@ -952,6 +998,8 @@ int defer_cr0_restore_checked(uint64_t cr0)
                 start_cycles); \
     return _result; \
 } while(0)
+    if(!cr0_chain_available())
+        RETURN_CR0_RESTORE(write_cr0_preserving_trap_frame_checked(cr0));
     METRIC_TIME_START(arm_start_cycles);
     uint64_t restore_stack = trap_frame + fpu_cr0_exit_stack_offset;
     if(copy_to_trap_frame_offset_cached(fpu_cr0_deferred_offset, &cr0,

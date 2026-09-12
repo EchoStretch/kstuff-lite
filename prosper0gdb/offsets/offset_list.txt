@@ -73,10 +73,31 @@ KDATA_OFFSET(push_pop_all_iret)
 KDATA_OFFSET(kernel_pmap_store)
 KDATA_OFFSET(crypt_singleton_array)
 KDATA_OFFSET(mov_rax_cr0)
-KDATA_OFFSET(cr0_load)
-KDATA_OFFSET(cr0_clear_store)
+// 1.xx kernels do not contain the compatible load/clear pair used by the fast
+// CR0 chain.  Keep those two components optional; mov_rax_cr0 + cr0_write_ret
+// provide the checked legacy transition.  store_rax_rdi remains required by
+// the KELF's general pokeq chains independently of this optimization.
+OPTIONAL_KDATA_OFFSET(cr0_load)
+OPTIONAL_KDATA_OFFSET(cr0_clear_store)
 KDATA_OFFSET(cr0_write_ret)
 KDATA_OFFSET(store_rax_rdi)
+// On 2.xx+ this is a CFI-table thunk which jumps to INT3.  The 1.xx syscall
+// dispatcher has no CFI table, so its exact retail table stores a raw RX INT3
+// target in this legacy-named common field.
 KDATA_OFFSET(syscall_cfi_table_jmp_int3)
 
 ABSOLUTE_OFFSET(p_sysent)
+
+// Optional PPR/fPKG porting inventory.  These entries are populated for the
+// supported retail firmwares from 1.00 through 11.40.  Keeping them in the
+// common table removes firmware-local address arithmetic from the UELF while
+// allowing newer, not-yet-ported tables to remain valid.  ShellCore-relative
+// values stay with the existing ps5-kstuff/shellcore_patches tables.
+OPTIONAL_KDATA_OFFSET(ppr_pfs_get_xts_index)
+OPTIONAL_KDATA_OFFSET(ppr_pfs_get_cmac_index)
+OPTIONAL_KDATA_OFFSET(ppr_pfs_get_xts_return)
+OPTIONAL_KDATA_OFFSET(ppr_pfs_get_cmac_return)
+OPTIONAL_KDATA_OFFSET(ppr_pfs_cleanup_keys)
+OPTIONAL_KDATA_OFFSET(ppr_pfs_clear_key_missing)
+OPTIONAL_KDATA_OFFSET(sceSblServiceMailbox_lr_verifyImage)
+OPTIONAL_KDATA_OFFSET(ppr_pfs_verify_image_no_key_success)

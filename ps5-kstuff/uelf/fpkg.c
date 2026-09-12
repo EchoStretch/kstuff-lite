@@ -18,6 +18,959 @@ extern char sceSblServiceRequest_lr_registerMountKey_2[];
 extern char sceSblServiceCryptAsync_deref_singleton[];
 extern char crypt_message_resolve[];
 extern char doreti_iret[];
+extern char ppr_pfs_get_xts_index[];
+extern char ppr_pfs_get_cmac_index[];
+extern char ppr_pfs_get_xts_return[];
+extern char ppr_pfs_get_cmac_return[];
+extern char ppr_pfs_cleanup_keys[];
+extern char ppr_pfs_clear_key_missing[];
+extern char ppr_pfs_verify_image_no_key_success[];
+
+enum {
+    PPR_PFS_CONTROL_PLAINTEXT_NOAUTH = 0x0009,
+    PPR_PFS_MODE_NATIVE_ENCRYPTED = 0x000d,
+    PPR_PFS_SESSION_ARMED = 1,
+    PPR_PFS_SESSION_ACTIVE = 2,
+    PPR_PFS_SESSION_STATE_MASK = 3,
+    PPR_PFS_SESSION_PAIR_OWNED = 4,
+    PPR_PLAINTEXT_PROTOCOL_VERSION = 8,
+    PPR_FIH_SIZE = 0x1000,
+    PPR_SUPERBLOCK_SIZE = 0x5a0,
+    PPR_STAGING_SIZE = PPR_FIH_SIZE + PPR_SUPERBLOCK_SIZE,
+    PPR_CONTROL_BEGIN = 1,
+    PPR_CONTROL_WRITE = 2,
+    PPR_CONTROL_CHECK = 3,
+    PPR_CONTROL_TRACE = 10,
+    PPR_CONTROL_SCOPE_ENTER = 11,
+    PPR_CONTROL_SCOPE_LEAVE = 12,
+    FPKG_SCOPE_KIND_MASK = 0xff,
+    FPKG_SCOPE_DEPTH_SHIFT = 32,
+};
+
+/*
+ * Private verifyImage handles.  They deliberately are not -1: the supported
+ * ppfs_read_outer_block paths treat ekey == -1 as a request for the
+ * unsupported ppfs_read_nsid2_plain_icv path even when the on-disk mode is
+ * 0x0d.
+ * These handles are never registered in the secure-module key trees.
+ */
+#define PPR_PFS_PLAINTEXT_XTS_HANDLE  (UINT32_MAX - 2u)
+#define PPR_PFS_PLAINTEXT_CMAC_HANDLE (UINT32_MAX - 3u)
+
+static const uint8_t ppr_plaintext_seed_marker[16] =
+    "PPRPLAIN-NOAUTH!";
+
+enum ppr_verify_success_abi
+{
+    PPR_VERIFY_SUCCESS_R14_R15,
+    PPR_VERIFY_SUCCESS_R13_STACK_158,
+    PPR_VERIFY_SUCCESS_R13_STACK_150,
+    PPR_VERIFY_SUCCESS_PACKED_STACK_158,
+};
+
+struct ppr_profile
+{
+    uint16_t cleanup_cmac_call_delta;
+    uint16_t cleanup_xts_call_delta;
+    uint8_t clear_pair_reg;
+    uint8_t clear_xts_reg;
+    uint8_t clear_cmac_reg;
+    uint8_t clear_result_reg;
+    uint8_t clear_resume_delta;
+    uint8_t verify_success_abi;
+};
+
+/*
+ * verifyImage's mailbox request is stable across the supported retail
+ * kernels, including its physical output destinations.  The wrapper keeps
+ * its successful key pair in different registers/stack slots, while
+ * sceSblPfsClearKey used five different saved-register layouts.
+ * The cleanup call deltas are kept in the same profile so a firmware cannot
+ * expose only half of the interception ABI.
+ *
+ * Every E8 delta below was verified byte-for-byte against the matching retail
+ * x86_kernel.elf. Firmware without a matching image in the local corpus is
+ * deliberately omitted. No runtime kernel-text probing is performed.
+ */
+static const struct ppr_profile* get_ppr_profile(void)
+{
+    static const struct ppr_profile fw1_early = {
+        0x126, 0x15a,
+        R15, R14, R15, RBX, 0x16,
+        PPR_VERIFY_SUCCESS_R14_R15,
+    };
+    static const struct ppr_profile fw1_late = {
+        0x145, 0x179,
+        R15, R14, R15, RBX, 0x16,
+        PPR_VERIFY_SUCCESS_R14_R15,
+    };
+    static const struct ppr_profile fw2 = {
+        0x144, 0x178,
+        R15, R14, R15, RBX, 0x16,
+        PPR_VERIFY_SUCCESS_R14_R15,
+    };
+    static const struct ppr_profile fw3 = {
+        0x137, 0x166,
+        R13, RBX, R15, R14, 0x0b,
+        PPR_VERIFY_SUCCESS_R14_R15,
+    };
+    static const struct ppr_profile fw4 = {
+        0x13d, 0x16c,
+        R13, R15, R14, R12, 0x17,
+        PPR_VERIFY_SUCCESS_R14_R15,
+    };
+    static const struct ppr_profile fw5_6 = {
+        0x138, 0x167,
+        R13, R15, R14, R12, 0x17,
+        PPR_VERIFY_SUCCESS_R13_STACK_158,
+    };
+    static const struct ppr_profile fw7 = {
+        0x11c, 0x14b,
+        R13, RBX, R14, R15, 0x0b,
+        PPR_VERIFY_SUCCESS_R13_STACK_150,
+    };
+    static const struct ppr_profile fw8 = {
+        0x117, 0x147,
+        R13, R14, R15, RBX, 0x16,
+        PPR_VERIFY_SUCCESS_R13_STACK_150,
+    };
+    static const struct ppr_profile fw9 = {
+        0x119, 0x149,
+        R13, R14, R15, RBX, 0x16,
+        PPR_VERIFY_SUCCESS_R13_STACK_150,
+    };
+    static const struct ppr_profile fw10 = {
+        0x119, 0x149,
+        R13, R14, R15, RBX, 0x16,
+        PPR_VERIFY_SUCCESS_PACKED_STACK_158,
+    };
+    static const struct ppr_profile fw11 = {
+        0x119, 0x149,
+        R13, R14, R15, RBX, 0x0a,
+        PPR_VERIFY_SUCCESS_PACKED_STACK_158,
+    };
+
+    switch(FWVER)
+    {
+    case 0x100: case 0x101: case 0x102:
+        return &fw1_early;
+    case 0x105: case 0x110: case 0x111: case 0x112:
+    case 0x113: case 0x114:
+        return &fw1_late;
+    case 0x200: case 0x220: case 0x225: case 0x226:
+    case 0x230: case 0x250: case 0x270:
+        return &fw2;
+    case 0x300: case 0x310: case 0x320: case 0x321:
+        return &fw3;
+    case 0x400: case 0x402: case 0x403: case 0x450: case 0x451:
+        return &fw4;
+    case 0x500: case 0x502: case 0x510: case 0x550:
+    case 0x600: case 0x602: case 0x650:
+        return &fw5_6;
+    case 0x700: case 0x701: case 0x720: case 0x740:
+    case 0x760: case 0x761:
+        return &fw7;
+    case 0x800: case 0x820: case 0x840: case 0x860:
+        return &fw8;
+    case 0x900: case 0x920: case 0x940: case 0x960:
+        return &fw9;
+    case 0x1000: case 0x1001: case 0x1020: case 0x1040: case 0x1060:
+        return &fw10;
+    case 0x1100: case 0x1120: case 0x1140:
+        return &fw11;
+    default:
+        return NULL;
+    }
+}
+
+static uint64_t ppr_pfs_plaintext_get_xts_index(void)
+{
+    if(!get_ppr_profile())
+        return 0;
+    return (uint64_t)ppr_pfs_get_xts_index;
+}
+
+static uint64_t ppr_pfs_plaintext_get_cmac_index(void)
+{
+    if(!get_ppr_profile())
+        return 0;
+    return (uint64_t)ppr_pfs_get_cmac_index;
+}
+
+static uint64_t ppr_pfs_plaintext_put_cmac_call(void)
+{
+    const struct ppr_profile* profile = get_ppr_profile();
+    if(!profile)
+        return 0;
+    return (uint64_t)ppr_pfs_cleanup_keys
+         + profile->cleanup_cmac_call_delta;
+}
+
+static uint64_t ppr_pfs_plaintext_put_xts_call(void)
+{
+    const struct ppr_profile* profile = get_ppr_profile();
+    if(!profile)
+        return 0;
+    return (uint64_t)ppr_pfs_cleanup_keys
+         + profile->cleanup_xts_call_delta;
+}
+
+static uint64_t ppr_pfs_plaintext_clear_key_missing(void)
+{
+    if(!get_ppr_profile())
+        return 0;
+    return (uint64_t)ppr_pfs_clear_key_missing;
+}
+
+static void retain_ppr_plaintext_key_pair(void)
+{
+    __atomic_fetch_add(&shared_area.ppr_plaintext_key_pairs_outstanding,
+                       1, __ATOMIC_RELEASE);
+}
+
+static int has_ppr_plaintext_key_pair(void)
+{
+    return __atomic_load_n(
+        &shared_area.ppr_plaintext_key_pairs_outstanding,
+        __ATOMIC_ACQUIRE) != 0;
+}
+
+static int release_ppr_plaintext_key_pair(uint64_t* xts_remaining,
+                                           uint64_t* cmac_remaining)
+{
+    uint64_t* counter = &shared_area.ppr_plaintext_key_pairs_outstanding;
+    uint64_t old = __atomic_load_n(counter, __ATOMIC_ACQUIRE);
+    while(old)
+    {
+        if(__atomic_compare_exchange_n(counter, &old, old - 1, 0,
+                                       __ATOMIC_ACQ_REL,
+                                       __ATOMIC_ACQUIRE))
+        {
+            if(xts_remaining)
+                *xts_remaining = old - 1;
+            if(cmac_remaining)
+                *cmac_remaining = old - 1;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static uint64_t ppr_pfs_verify_image_lr(void)
+{
+    if(!get_ppr_profile())
+        return 0;
+    return (uint64_t)sceSblServiceMailbox_lr_verifyImage;
+}
+
+static uint64_t canonicalize_debug_kernel_pointer(uint64_t value)
+{
+    if((value >> 48) == 0xdeb7)
+        value |= 0xffffull << 48;
+    return value;
+}
+
+static void canonicalize_debug_gprs(uint64_t* regs)
+{
+    static const uint8_t gprs[] = {
+        RAX, RCX, RDX, RBX, RBP, RSI, RDI, R8,
+        R9, R10, R11, R12, R13, R14, R15,
+    };
+    for(size_t i = 0; i < sizeof(gprs); i++)
+        regs[gprs[i]] = canonicalize_debug_kernel_pointer(regs[gprs[i]]);
+}
+
+static int is_dmem_range(uint64_t address, uint64_t size)
+{
+    /* kelf maps the first 512 GiB of physical memory at DMEM. */
+    const uint64_t dmem_size = 1ull << 39;
+    /* A verified output allocation cannot reside in physical page zero.
+     * Rejecting it also prevents a zero-filled malformed request from
+     * becoming a write through the direct map. */
+    return size && address >= 0x1000 && address < dmem_size
+                && size <= dmem_size - address;
+}
+
+static int dmem_ranges_overlap(uint64_t first, uint64_t first_size,
+                               uint64_t second, uint64_t second_size)
+{
+    /* Call only after both ranges have passed is_dmem_range(), which also
+     * proves that the following end-address additions cannot overflow. */
+    return first < second + second_size && second < first + first_size;
+}
+
+static uint16_t load_u16_unaligned(const uint8_t* p)
+{
+    uint16_t value;
+    memcpy(&value, p, sizeof(value));
+    return value;
+}
+
+static uint64_t load_u64_unaligned(const uint8_t* p)
+{
+    uint64_t value;
+    memcpy(&value, p, sizeof(value));
+    return value;
+}
+
+static uint64_t validate_ppr_plaintext_staging(
+    const struct kstuff_ppr_plaintext_staging* staging)
+{
+    const uint8_t* fih = staging->fih;
+    const uint8_t* sblock = staging->superblock;
+    uint64_t failed = 0;
+    if(memcmp(fih, "\x7f" "FIH", 4)) failed |= 1ull << 0;
+    if(load_u64_unaligned(fih + 0x10) != 0x10000) failed |= 1ull << 1;
+    if(load_u64_unaligned(fih + 0x28) != 0x10000) failed |= 1ull << 2;
+    if(load_u64_unaligned(fih + 0x60) != 0x10000) failed |= 1ull << 3;
+    if(load_u64_unaligned(sblock) != 2) failed |= 1ull << 4;
+    if(load_u64_unaligned(sblock + 8) <= 0x01332a0a) failed |= 1ull << 5;
+    if(load_u16_unaligned(sblock + 0x1c)
+                                      != PPR_PFS_MODE_NATIVE_ENCRYPTED)
+        failed |= 1ull << 6;
+    if(load_u64_unaligned(sblock + 0x20) != 0x10000) failed |= 1ull << 7;
+    if(memcmp(sblock + 0x370, ppr_plaintext_seed_marker,
+              sizeof(ppr_plaintext_seed_marker)))
+        failed |= 1ull << 9;
+    return failed;
+}
+
+static int get_current_ppr_thread(uint64_t* td)
+{
+    if(copy_current_thread_from_pcpu_cached(td))
+        return EFAULT;
+    *td = canonicalize_debug_kernel_pointer(*td);
+    return (*td >> 48) == 0xffff ? 0 : EFAULT;
+}
+
+static uint64_t fpkg_scope_for_thread(uint64_t td)
+{
+    for(size_t i = 0; i < SHARED_FPKG_SCOPE_SLOTS; i++)
+    {
+        struct kstuff_fpkg_scope* slot = &shared_area.fpkg_scopes[i];
+        if(__atomic_load_n(&slot->td, __ATOMIC_ACQUIRE) == td)
+            return __atomic_load_n(&slot->state, __ATOMIC_ACQUIRE);
+    }
+    return 0;
+}
+
+static int enter_fpkg_scope(uint64_t td, uint64_t kind)
+{
+    if(kind < KSTUFF_FPKG_SCOPE_GAME_MOUNT
+    || kind > KSTUFF_FPKG_SCOPE_PPR_UNMOUNT)
+        return EINVAL;
+
+    for(size_t i = 0; i < SHARED_FPKG_SCOPE_SLOTS; i++)
+    {
+        struct kstuff_fpkg_scope* slot = &shared_area.fpkg_scopes[i];
+        uint64_t owner = __atomic_load_n(&slot->td, __ATOMIC_ACQUIRE);
+        if(owner == td)
+        {
+            uint64_t old = __atomic_load_n(&slot->state, __ATOMIC_ACQUIRE);
+            for(;;)
+            {
+                if((old & FPKG_SCOPE_KIND_MASK) != kind)
+                    return EBUSY;
+                uint64_t depth = old >> FPKG_SCOPE_DEPTH_SHIFT;
+                if(!depth || depth == UINT32_MAX)
+                    return EBUSY;
+                uint64_t next = old + (1ull << FPKG_SCOPE_DEPTH_SHIFT);
+                if(__atomic_compare_exchange_n(&slot->state, &old, next, 0,
+                                               __ATOMIC_ACQ_REL,
+                                               __ATOMIC_ACQUIRE))
+                    return 0;
+            }
+        }
+        if(!owner)
+        {
+            uint64_t expected = 0;
+            if(!__atomic_compare_exchange_n(&slot->td, &expected, td, 0,
+                                            __ATOMIC_ACQ_REL,
+                                            __ATOMIC_ACQUIRE))
+                continue;
+            __atomic_store_n(&slot->state,
+                             (1ull << FPKG_SCOPE_DEPTH_SHIFT) | kind,
+                             __ATOMIC_RELEASE);
+            return 0;
+        }
+    }
+    return EBUSY;
+}
+
+static int leave_fpkg_scope(uint64_t td, uint64_t kind)
+{
+    for(size_t i = 0; i < SHARED_FPKG_SCOPE_SLOTS; i++)
+    {
+        struct kstuff_fpkg_scope* slot = &shared_area.fpkg_scopes[i];
+        if(__atomic_load_n(&slot->td, __ATOMIC_ACQUIRE) != td)
+            continue;
+        uint64_t old = __atomic_load_n(&slot->state, __ATOMIC_ACQUIRE);
+        for(;;)
+        {
+            uint64_t depth = old >> FPKG_SCOPE_DEPTH_SHIFT;
+            if((old & FPKG_SCOPE_KIND_MASK) != kind || !depth)
+                return EPERM;
+            if(depth > 1)
+            {
+                uint64_t next = old - (1ull << FPKG_SCOPE_DEPTH_SHIFT);
+                if(__atomic_compare_exchange_n(&slot->state, &old, next, 0,
+                                               __ATOMIC_ACQ_REL,
+                                               __ATOMIC_ACQUIRE))
+                    return 0;
+                continue;
+            }
+            if(!__atomic_compare_exchange_n(&slot->state, &old, 0, 0,
+                                            __ATOMIC_ACQ_REL,
+                                            __ATOMIC_ACQUIRE))
+                continue;
+            __atomic_store_n(&slot->td, 0, __ATOMIC_RELEASE);
+            return 0;
+        }
+    }
+    return EPERM;
+}
+
+int current_fpkg_syscall_scope(int is_nmount, int* is_ppr)
+{
+    uint64_t td;
+    if(get_current_ppr_thread(&td))
+        return 0;
+    uint64_t kind = fpkg_scope_for_thread(td) & FPKG_SCOPE_KIND_MASK;
+    int allowed = is_nmount
+                ? (kind == KSTUFF_FPKG_SCOPE_GAME_MOUNT
+                || kind == KSTUFF_FPKG_SCOPE_PPR_MOUNT)
+                : (kind == KSTUFF_FPKG_SCOPE_GAME_UNMOUNT
+                || kind == KSTUFF_FPKG_SCOPE_PPR_UNMOUNT);
+    if(!allowed)
+        return 0;
+    if(is_ppr)
+        *is_ppr = kind == KSTUFF_FPKG_SCOPE_PPR_MOUNT
+               || kind == KSTUFF_FPKG_SCOPE_PPR_UNMOUNT;
+    return 1;
+}
+
+static void release_ppr_plaintext_staging(uint64_t td)
+{
+    struct kstuff_ppr_plaintext_staging* staging =
+        &shared_area.ppr_plaintext_staging;
+    if(__atomic_load_n(&staging->td, __ATOMIC_ACQUIRE) != td)
+        return;
+    __atomic_store_n(&staging->ready, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&staging->bytes_written, 0, __ATOMIC_RELAXED);
+    memset(staging->fih, 0, sizeof(staging->fih));
+    memset(staging->superblock, 0, sizeof(staging->superblock));
+    __atomic_store_n(&staging->td, 0, __ATOMIC_RELEASE);
+}
+
+static int begin_current_ppr_plaintext_staging(uint64_t td)
+{
+    struct kstuff_ppr_plaintext_staging* staging =
+        &shared_area.ppr_plaintext_staging;
+    uint64_t owner = __atomic_load_n(&staging->td, __ATOMIC_ACQUIRE);
+    if(owner && owner != td)
+        return EBUSY;
+    if(!owner)
+    {
+        uint64_t expected = 0;
+        if(!__atomic_compare_exchange_n(&staging->td, &expected, td, 0,
+                                        __ATOMIC_ACQ_REL,
+                                        __ATOMIC_ACQUIRE))
+            return EBUSY;
+    }
+    if(__atomic_load_n(&staging->ready, __ATOMIC_ACQUIRE))
+        return EBUSY;
+    memset(staging->fih, 0, sizeof(staging->fih));
+    memset(staging->superblock, 0, sizeof(staging->superblock));
+    __atomic_store_n(&staging->bytes_written, 0, __ATOMIC_RELEASE);
+    return 0;
+}
+
+static int write_current_ppr_plaintext_staging(uint64_t td,
+                                               uint64_t offset,
+                                               uint64_t unused,
+                                               uint64_t word1,
+                                               uint64_t word2)
+{
+    (void)unused;
+    struct kstuff_ppr_plaintext_staging* staging =
+        &shared_area.ppr_plaintext_staging;
+    if(__atomic_load_n(&staging->td, __ATOMIC_ACQUIRE) != td
+    || __atomic_load_n(&staging->ready, __ATOMIC_ACQUIRE))
+        return EPERM;
+    uint64_t written = __atomic_load_n(&staging->bytes_written,
+                                       __ATOMIC_ACQUIRE);
+    if(offset != written || offset >= PPR_STAGING_SIZE)
+        return EINVAL;
+
+    uint8_t chunk[16];
+    memcpy(chunk, &word1, 8);
+    memcpy(chunk + 8, &word2, 8);
+    size_t size = PPR_STAGING_SIZE - offset;
+    if(size > sizeof(chunk))
+        size = sizeof(chunk);
+    if(offset < PPR_FIH_SIZE)
+    {
+        size_t fih_size = PPR_FIH_SIZE - offset;
+        if(fih_size > size)
+            fih_size = size;
+        memcpy(staging->fih + offset, chunk, fih_size);
+        if(fih_size < size)
+            memcpy(staging->superblock, chunk + fih_size, size - fih_size);
+    }
+    else
+    {
+        memcpy(staging->superblock + offset - PPR_FIH_SIZE, chunk, size);
+    }
+    __atomic_store_n(&staging->bytes_written, offset + size,
+                     __ATOMIC_RELEASE);
+    return 0;
+}
+
+static int arm_current_ppr_plaintext_latch(uint64_t* armed_td)
+{
+    uint64_t td;
+    if(get_current_ppr_thread(&td))
+        return 0;
+    for(size_t i = 0; i < SHARED_PPR_PLAINTEXT_LATCH_SLOTS; i++)
+    {
+        struct kstuff_ppr_plaintext_latch* latch =
+            &shared_area.ppr_plaintext_latches[i];
+        uint64_t owner = __atomic_load_n(&latch->td,
+                                         __ATOMIC_ACQUIRE);
+        if(owner == td)
+        {
+            uint64_t expected = 0;
+            if(!__atomic_compare_exchange_n(
+                   &latch->state, &expected, PPR_PFS_SESSION_ARMED, 0,
+                   __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+                return 0;
+            if(armed_td)
+                *armed_td = td;
+            return 1;
+        }
+        if(!owner)
+        {
+            uint64_t expected = 0;
+            if(__atomic_compare_exchange_n(&latch->td,
+                                           &expected, td, 0,
+                                           __ATOMIC_ACQ_REL,
+                                           __ATOMIC_ACQUIRE))
+            {
+                __atomic_store_n(&latch->state, PPR_PFS_SESSION_ARMED,
+                                 __ATOMIC_RELEASE);
+                if(armed_td)
+                    *armed_td = td;
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int consume_current_ppr_plaintext_latch(uint64_t* consumed_td)
+{
+    uint64_t td;
+    if(get_current_ppr_thread(&td))
+        return 0;
+    if(consumed_td)
+        *consumed_td = td;
+    if(__atomic_load_n(&shared_area.ppr_plaintext_staging.td,
+                       __ATOMIC_ACQUIRE) != td
+    || !__atomic_load_n(&shared_area.ppr_plaintext_staging.ready,
+                        __ATOMIC_ACQUIRE))
+        return 0;
+    for(size_t i = 0; i < SHARED_PPR_PLAINTEXT_LATCH_SLOTS; i++)
+    {
+        struct kstuff_ppr_plaintext_latch* latch =
+            &shared_area.ppr_plaintext_latches[i];
+        if(__atomic_load_n(&latch->td,
+                           __ATOMIC_ACQUIRE) != td)
+            continue;
+        uint64_t expected = PPR_PFS_SESSION_ARMED;
+        int activated = __atomic_compare_exchange_n(
+            &latch->state, &expected, PPR_PFS_SESSION_ACTIVE, 0,
+            __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+        /*
+         * Every CPU has a separate uelf image, so this state must live in
+         * shared_area rather than in this image's .bss. Same-thread ownership,
+         * the one-shot armed bit, exact LR, and the verified request shape are
+         * the authorization boundary.
+         */
+        return activated;
+    }
+    return 0;
+}
+
+static int retain_current_ppr_plaintext_key_pair(uint64_t td)
+{
+    for(size_t i = 0; i < SHARED_PPR_PLAINTEXT_LATCH_SLOTS; i++)
+    {
+        struct kstuff_ppr_plaintext_latch* latch =
+            &shared_area.ppr_plaintext_latches[i];
+        if(__atomic_load_n(&latch->td, __ATOMIC_ACQUIRE) != td)
+            continue;
+
+        uint64_t old = __atomic_load_n(&latch->state, __ATOMIC_ACQUIRE);
+        for(;;)
+        {
+            if((old & PPR_PFS_SESSION_STATE_MASK) != PPR_PFS_SESSION_ACTIVE
+            || (old & PPR_PFS_SESSION_PAIR_OWNED))
+                return 0;
+            uint64_t next = old | PPR_PFS_SESSION_PAIR_OWNED;
+            if(__atomic_compare_exchange_n(&latch->state, &old, next, 0,
+                                           __ATOMIC_ACQ_REL,
+                                           __ATOMIC_ACQUIRE))
+            {
+                retain_ppr_plaintext_key_pair();
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int rollback_current_ppr_plaintext_key_pair(uint64_t td)
+{
+    for(size_t i = 0; i < SHARED_PPR_PLAINTEXT_LATCH_SLOTS; i++)
+    {
+        struct kstuff_ppr_plaintext_latch* latch =
+            &shared_area.ppr_plaintext_latches[i];
+        if(__atomic_load_n(&latch->td, __ATOMIC_ACQUIRE) != td)
+            continue;
+
+        uint64_t old = __atomic_load_n(&latch->state, __ATOMIC_ACQUIRE);
+        for(;;)
+        {
+            if(!(old & PPR_PFS_SESSION_PAIR_OWNED))
+                return 0;
+            uint64_t next = old & ~PPR_PFS_SESSION_PAIR_OWNED;
+            if(__atomic_compare_exchange_n(&latch->state, &old, next, 0,
+                                           __ATOMIC_ACQ_REL,
+                                           __ATOMIC_ACQUIRE))
+                return release_ppr_plaintext_key_pair(NULL, NULL);
+        }
+    }
+    return 0;
+}
+
+static void forget_current_ppr_plaintext_key_pair(void)
+{
+    uint64_t td;
+    if(get_current_ppr_thread(&td))
+        return;
+    for(size_t i = 0; i < SHARED_PPR_PLAINTEXT_LATCH_SLOTS; i++)
+    {
+        struct kstuff_ppr_plaintext_latch* latch =
+            &shared_area.ppr_plaintext_latches[i];
+        if(__atomic_load_n(&latch->td, __ATOMIC_ACQUIRE) == td)
+        {
+            __atomic_fetch_and(&latch->state,
+                               ~(uint64_t)PPR_PFS_SESSION_PAIR_OWNED,
+                               __ATOMIC_ACQ_REL);
+            return;
+        }
+    }
+}
+
+static void clear_current_ppr_plaintext_latch(int mount_failed)
+{
+    uint64_t td;
+    if(get_current_ppr_thread(&td))
+        return;
+    for(size_t i = 0; i < SHARED_PPR_PLAINTEXT_LATCH_SLOTS; i++)
+    {
+        struct kstuff_ppr_plaintext_latch* latch =
+            &shared_area.ppr_plaintext_latches[i];
+        if(__atomic_load_n(&latch->td,
+                           __ATOMIC_ACQUIRE) != td)
+            continue;
+        uint64_t state = __atomic_exchange_n(&latch->state, 0,
+                                             __ATOMIC_ACQ_REL);
+        if(mount_failed && (state & PPR_PFS_SESSION_PAIR_OWNED))
+            (void)release_ppr_plaintext_key_pair(NULL, NULL);
+        __atomic_store_n(&latch->td, 0,
+                         __ATOMIC_RELEASE);
+    }
+    release_ppr_plaintext_staging(td);
+}
+
+int control_ppr_plaintext_request(uint64_t magic, uint64_t mode,
+                                  uint64_t arg0, uint64_t arg1,
+                                  uint64_t arg2, uint64_t arg3,
+                                  uint64_t* result)
+{
+    /*
+     * "PPRPLAIN", protocol v8. No user pointer is dereferenced: WRITE carries
+     * 16 snapshot bytes in R8/R9. R10 is deliberately unused because the
+     * established kekcall fast snapshot ends at RAX and includes R8/R9.
+     */
+    *result = 0;
+    if(!get_ppr_profile() || magic != 0x505052504c41494eull)
+        return EINVAL;
+    if(mode == PPR_CONTROL_TRACE)
+    {
+#if KSTUFF_OBS
+        /* These are last-value diagnostics, not protocol state.  Keeping
+         * them in the metrics snapshot avoids consuming the tiny word log
+         * three entries at a time during every ShellCore mount attempt. */
+        __atomic_store_n(&shared_area.metrics.ppr_plaintext_hook_stage, arg0,
+                         __ATOMIC_RELAXED);
+        /* Only stage 4 deliberately carries the marker word in R8.  Later
+         * trace calls inherit an arbitrary caller-saved R8 and must not
+         * overwrite the captured on-disk value. */
+        if(arg0 == 4)
+            __atomic_store_n(
+                &shared_area.metrics.ppr_plaintext_hook_value, arg2,
+                __ATOMIC_RELAXED);
+#endif
+        return 0;
+    }
+    uint64_t td = 0;
+    if(get_current_ppr_thread(&td))
+        return EFAULT;
+    if(mode == PPR_CONTROL_SCOPE_ENTER
+    || mode == PPR_CONTROL_SCOPE_LEAVE)
+    {
+        if(arg0 != PPR_PLAINTEXT_PROTOCOL_VERSION)
+            return EINVAL;
+        return mode == PPR_CONTROL_SCOPE_ENTER
+             ? enter_fpkg_scope(td, arg2)
+             : leave_fpkg_scope(td, arg2);
+    }
+    if((fpkg_scope_for_thread(td) & FPKG_SCOPE_KIND_MASK)
+                                      != KSTUFF_FPKG_SCOPE_PPR_MOUNT)
+        return EPERM;
+    if(mode == 0)
+    {
+        if(arg0 != PPR_PLAINTEXT_PROTOCOL_VERSION)
+            return EINVAL;
+        /* R10 is not present in the established kekcall snapshot.  Protocol
+         * v8 carries sceFsMountPprPkg's result in arg2/R8 instead. */
+        clear_current_ppr_plaintext_latch(arg2 != 0);
+        return 0;
+    }
+    if(mode == PPR_CONTROL_BEGIN)
+    {
+        if(arg0 != PPR_PLAINTEXT_PROTOCOL_VERSION)
+            return EINVAL;
+        return begin_current_ppr_plaintext_staging(td);
+    }
+    if(mode == PPR_CONTROL_WRITE)
+        return write_current_ppr_plaintext_staging(
+            td, arg0, arg1, arg2, arg3);
+    if(mode == PPR_CONTROL_CHECK)
+    {
+        struct kstuff_ppr_plaintext_staging* staging =
+            &shared_area.ppr_plaintext_staging;
+        if(__atomic_load_n(&staging->td, __ATOMIC_ACQUIRE) != td)
+            return EPERM;
+        uint64_t failed = validate_ppr_plaintext_staging(staging);
+        if(__atomic_load_n(&staging->bytes_written, __ATOMIC_ACQUIRE)
+                                                   != PPR_STAGING_SIZE)
+            failed |= 1ull << 8;
+        *result = failed;
+        return 0;
+    }
+    if(mode != PPR_PFS_CONTROL_PLAINTEXT_NOAUTH
+    || arg0 != PPR_PLAINTEXT_PROTOCOL_VERSION)
+        return EINVAL;
+
+    struct kstuff_ppr_plaintext_staging* staging =
+        &shared_area.ppr_plaintext_staging;
+    if(__atomic_load_n(&staging->td, __ATOMIC_ACQUIRE) != td
+    || __atomic_load_n(&staging->bytes_written, __ATOMIC_ACQUIRE)
+                                                   != PPR_STAGING_SIZE
+    || validate_ppr_plaintext_staging(staging))
+    {
+        release_ppr_plaintext_staging(td);
+        return EINVAL;
+    }
+    __atomic_store_n(&staging->ready, 1, __ATOMIC_RELEASE);
+    int armed = arm_current_ppr_plaintext_latch(&td);
+    if(!armed)
+        release_ppr_plaintext_staging(td);
+    else
+        METRIC_INC(ppr_plaintext_profile_matches);
+#if KSTUFF_OBS
+    log_word(0x50505241524d3038ull); /* "PPRARM08" */
+    log_word(td);
+    log_word(mode);
+    log_word(armed);
+    log_word(load_u64_unaligned(shared_area.ppr_plaintext_staging.fih));
+    log_word(load_u64_unaligned(
+        shared_area.ppr_plaintext_staging.superblock));
+#endif
+    return armed ? 0 : EBUSY;
+}
+
+static int current_ppr_plaintext_session_active(uint64_t* active_td)
+{
+    uint64_t td;
+    if(get_current_ppr_thread(&td))
+        return 0;
+    if(active_td)
+        *active_td = td;
+    for(size_t i = 0; i < SHARED_PPR_PLAINTEXT_LATCH_SLOTS; i++)
+    {
+        struct kstuff_ppr_plaintext_latch* latch =
+            &shared_area.ppr_plaintext_latches[i];
+        if(__atomic_load_n(&latch->td, __ATOMIC_ACQUIRE) == td
+        && (__atomic_load_n(&latch->state, __ATOMIC_ACQUIRE)
+            & PPR_PFS_SESSION_STATE_MASK) == PPR_PFS_SESSION_ACTIVE)
+            return 1;
+    }
+    return 0;
+}
+
+static int current_ppr_plaintext_session_pending(void)
+{
+    uint64_t td;
+    if(get_current_ppr_thread(&td))
+        return 0;
+    for(size_t i = 0; i < SHARED_PPR_PLAINTEXT_LATCH_SLOTS; i++)
+    {
+        struct kstuff_ppr_plaintext_latch* latch =
+            &shared_area.ppr_plaintext_latches[i];
+        uint64_t state = __atomic_load_n(&latch->state,
+                                         __ATOMIC_ACQUIRE);
+        if(__atomic_load_n(&latch->td, __ATOMIC_ACQUIRE) == td
+        && ((state & PPR_PFS_SESSION_STATE_MASK) == PPR_PFS_SESSION_ARMED
+         || (state & PPR_PFS_SESSION_STATE_MASK) == PPR_PFS_SESSION_ACTIVE))
+            return 1;
+    }
+    return 0;
+}
+
+static void try_emulate_plaintext_key_index(uint64_t* regs, int cmac)
+{
+    METRIC_INC(ppr_plaintext_g6_traps);
+    canonicalize_debug_gprs(regs);
+
+    uint64_t active_td = 0;
+    uint32_t expected_handle = cmac ? PPR_PFS_PLAINTEXT_CMAC_HANDLE
+                                    : PPR_PFS_PLAINTEXT_XTS_HANDLE;
+    /*
+     * Translate the private handles to the positive FE/FF indices consumed by
+     * A53.  A -1 encryption handle makes ppfs_read_outer_block select the
+     * unsupported ppfs_read_nsid2_plain_icv path before A53 is reached.
+     */
+    uint32_t expected_index = cmac ? 0xfe : 0xff;
+    uint64_t expected_return = cmac
+                             ? (uint64_t)ppr_pfs_get_cmac_return
+                             : (uint64_t)ppr_pfs_get_xts_return;
+    uint64_t return_address = 0;
+    if(!current_ppr_plaintext_session_active(&active_td)
+    || (uint32_t)regs[RDI] != expected_handle
+    || (regs[RSI] >> 48) != 0xffff
+    || copy_u64_from_kernel(&return_address, regs[RSP])
+    || return_address != expected_return)
+    {
+        METRIC_INC(ppr_plaintext_g6_bad_initial_indices);
+        return;
+    }
+    if(copy_u32_to_kernel(regs[RSI], expected_index))
+    {
+        METRIC_INC(ppr_plaintext_g6_copy_failures);
+        return;
+    }
+
+    regs[RSP] += sizeof(uint64_t);
+    regs[RIP] = return_address;
+    regs[RAX] = 0;
+    METRIC_INC(ppr_plaintext_g6_applied);
+    observe_current_syscall_emulated();
+#if KSTUFF_OBS
+    log_word(0x5050524b49445831ull); /* "PPRKIDX1" */
+    log_word(cmac ? 1 : 2);
+    log_word(active_td);
+    log_word(return_address);
+#endif
+}
+
+static void try_emulate_plaintext_cleanup_put(uint64_t* regs, int cmac)
+{
+    /* cleanup_a53io_pkg_keys releases the positive G6 indices produced by
+     * get_*_index, not the private FC/FD handles accepted by those getters. */
+    uint32_t expected_index = cmac ? 0xfe : 0xff;
+    if((uint32_t)regs[RDI] != expected_index)
+    {
+        /* RF executes the original call for every native key index. The
+         * breakpoints themselves are installed only when this unmount began
+         * with a synthetic pair outstanding. Do not recheck the global
+         * lifetime here: sceSblPfsClearKey can consume that pair earlier in
+         * the same syscall, before cleanup_a53io_pkg_keys runs. */
+        return;
+    }
+
+    /* The resolved trap is an E8 rel32 call instruction.  Report success to
+     * cleanup_a53io_pkg_keys so stock code sets the corresponding context
+     * field to -1, then performs its worker wake/wait and mutex destruction. */
+    regs[RAX] = 0;
+    regs[RIP] += 5;
+    METRIC_INC(ppr_plaintext_cleanup_put_emulated);
+    observe_current_syscall_emulated();
+#if KSTUFF_OBS
+    log_word(0x5050525055543031ull); /* "PPRPUT01" */
+    log_word(cmac ? 1 : 2);
+    log_word(expected_index);
+    log_word(regs[RIP]);
+#endif
+}
+
+static void try_emulate_plaintext_clear_key_missing(uint64_t* regs)
+{
+    const struct ppr_profile* abi = get_ppr_profile();
+    const uint64_t expected_pair =
+        ((uint64_t)PPR_PFS_PLAINTEXT_XTS_HANDLE << 32)
+      | PPR_PFS_PLAINTEXT_CMAC_HANDLE;
+    uint64_t xts_remaining = 0;
+    uint64_t cmac_remaining = 0;
+    uint64_t trap = ppr_pfs_plaintext_clear_key_missing();
+    int expected_args = abi
+                     && (regs[abi->clear_pair_reg] == expected_pair
+                      || (regs[abi->clear_xts_reg]
+                                      == PPR_PFS_PLAINTEXT_XTS_HANDLE
+                       && regs[abi->clear_cmac_reg]
+                                      == PPR_PFS_PLAINTEXT_CMAC_HANDLE));
+
+    /* At this point sceSblPfsClearKey has normally built (a1 << 32) | a2 in
+     * its generation-specific pair register and still owns its normal
+     * lock/frame.  If the tree root itself is
+     * null, the branch arrives before that construction and the original
+     * zero-extended arguments remain in the saved argument registers, so
+     * accept that equivalent exact shape too.  Unrelated misses execute the
+     * trapped stock instruction through RF without register or RIP emulation.
+     */
+    if(!expected_args
+    || !has_ppr_plaintext_key_pair())
+    {
+        /* RF lets the trapped stock result assignment execute once. */
+        return;
+    }
+    if(!release_ppr_plaintext_key_pair(&xts_remaining, &cmac_remaining))
+        return;
+    /* An internal rollback unmount can run before the still-active ShellCore
+     * mount wrapper reports failure.  Disown the pair so its final CLEAR does
+     * not release a second, unrelated mount's global count. */
+    forget_current_ppr_plaintext_key_pair();
+
+    /*
+     * Skip the diagnostic call but retain sceSblPfsClearKey's stock unlock,
+     * stack-canary check and profile-specific epilogue.
+     */
+    regs[abi->clear_result_reg] = 0;
+    regs[RIP] = trap + abi->clear_resume_delta;
+    METRIC_INC(clear_key_emulated);
+    observe_current_syscall_emulated();
+#if KSTUFF_OBS
+    log_word(0x505052434c523031ull); /* "PPRCLR01" */
+    log_word(expected_pair);
+    log_word(xts_remaining);
+    log_word(cmac_remaining);
+    log_word(regs[RIP]);
+#endif
+}
+
 
 #define IDX_TO_HANDLE(x) (0x13374100 | ((uint8_t)((x)+1)))
 #define HANDLE_TO_IDX(x) ((((x) & 0xffffff00) == 0x13374100 ? ((int)(uint8_t)(x)) : (int)0) - 1)
@@ -311,6 +1264,18 @@ exit:
     return handled;
 }
 
+int is_fpkg_trap_rip(uint64_t rip)
+{
+    uint64_t put_cmac = ppr_pfs_plaintext_put_cmac_call();
+    uint64_t put_xts = ppr_pfs_plaintext_put_xts_call();
+    return rip == (uint64_t)sceSblServiceCryptAsync_deref_singleton
+        || rip == ppr_pfs_plaintext_get_xts_index()
+        || rip == ppr_pfs_plaintext_get_cmac_index()
+        || (put_cmac && rip == put_cmac)
+        || (put_xts && rip == put_xts)
+        || rip == ppr_pfs_plaintext_clear_key_missing();
+}
+
 int try_handle_fpkg_trap(uint64_t* regs)
 {
     if(regs[RIP] == (uint64_t)sceSblServiceCryptAsync_deref_singleton)
@@ -323,6 +1288,26 @@ int try_handle_fpkg_trap(uint64_t* regs)
             regs[RBX] |= -1ull << 48;
         }
     }
+    else if(regs[RIP] == ppr_pfs_plaintext_get_xts_index())
+    {
+        try_emulate_plaintext_key_index(regs, 0);
+    }
+    else if(regs[RIP] == ppr_pfs_plaintext_get_cmac_index())
+    {
+        try_emulate_plaintext_key_index(regs, 1);
+    }
+    else if(regs[RIP] == ppr_pfs_plaintext_put_cmac_call())
+    {
+        try_emulate_plaintext_cleanup_put(regs, 1);
+    }
+    else if(regs[RIP] == ppr_pfs_plaintext_put_xts_call())
+    {
+        try_emulate_plaintext_cleanup_put(regs, 0);
+    }
+    else if(regs[RIP] == ppr_pfs_plaintext_clear_key_missing())
+    {
+        try_emulate_plaintext_clear_key_missing(regs);
+    }
     else
         return 0;
     return 1;
@@ -330,12 +1315,356 @@ int try_handle_fpkg_trap(uint64_t* regs)
 
 int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
 {
-    if(lr == (uint64_t)sceSblServiceMailbox_lr_verifySuperBlock)
+    const struct ppr_profile* ppr_abi = get_ppr_profile();
+    uint64_t ppr_verify_image_lr = ppr_pfs_verify_image_lr();
+    int is_ppr_verify_image = ppr_verify_image_lr
+                           && lr == ppr_verify_image_lr;
+
+    if(lr == (uint64_t)sceSblServiceMailbox_lr_verifySuperBlock
+    || is_ppr_verify_image)
     {
+        /* DR delivery may poison the high pointer bits in saved GPRs. */
+        if(is_ppr_verify_image)
+            canonicalize_debug_gprs(regs);
+        uint64_t request_address = regs[RDX];
+        uint64_t req[13] = {0};
+        int req_head_copy_error = copy_from_kernel(req, request_address, 64);
+        int ppr_plaintext_pending = is_ppr_verify_image && ppr_abi
+                                 && __atomic_load_n(
+                                      &shared_area.ppr_plaintext_staging.ready,
+                                      __ATOMIC_ACQUIRE)
+                                 && current_ppr_plaintext_session_pending();
         METRIC_INC(verify_superblock_mailbox);
-        uint64_t req[8];
-        if(copy_from_kernel(req, regs[RDX], 64))
+#if KSTUFF_OBS
+        if(is_ppr_verify_image)
+        {
+            __atomic_store_n(&shared_area.metrics.ppr_verify_last_lr, lr,
+                             __ATOMIC_RELAXED);
+            __atomic_store_n(&shared_area.metrics.ppr_verify_expected_lr,
+                             ppr_verify_image_lr, __ATOMIC_RELAXED);
+            __atomic_store_n(&shared_area.metrics.ppr_verify_last_req0,
+                             req[0], __ATOMIC_RELAXED);
+            __atomic_store_n(&shared_area.metrics.ppr_verify_last_req3,
+                             req[3], __ATOMIC_RELAXED);
+        }
+#endif
+#if KSTUFF_OBS
+        if(is_ppr_verify_image)
+        {
+            /*
+             * Log before validating the generation-specific request shape.
+             * Otherwise a changed layout is indistinguishable from a missed
+             * mailbox breakpoint and the real SM request may merely time out.
+             */
+            log_word(0x5050524d42583333ull); /* "PPRMBX33" */
+            log_word(lr);
+            log_word(ppr_verify_image_lr);
+            log_word(request_address);
+            log_word((uint32_t)req_head_copy_error);
+            log_word(req[0]);
+            log_word(req[3]);
+            log_word(ppr_plaintext_pending);
+        }
+#endif
+        if(req_head_copy_error)
             return 0;
+        if(is_ppr_verify_image && (req[0] != 1 || req[3] != 0x20000))
+            return 0;
+        if(is_ppr_verify_image
+        && copy_from_kernel(req + 8, request_address + 64,
+                            sizeof(req) - 64))
+            return 0;
+
+        uint64_t fih_read_size = 0;
+        uint64_t sblock_input_size = 0;
+        uint64_t ppr_request_malformed = 0;
+        int ppr_verify_plaintext_pending = is_ppr_verify_image
+                                         && ppr_plaintext_pending;
+        if(ppr_verify_plaintext_pending)
+        {
+#if KSTUFF_OBS
+            __atomic_store_n(&shared_area.metrics.ppr_verify_last_fih_pa,
+                             req[6], __ATOMIC_RELAXED);
+            __atomic_store_n(&shared_area.metrics.ppr_verify_last_sblock_pa,
+                             req[7], __ATOMIC_RELAXED);
+            __atomic_store_n(&shared_area.metrics.ppr_verify_last_icv_pa,
+                             req[4], __ATOMIC_RELAXED);
+#endif
+
+            /* req[9] is { FIH output size, superblock output capacity }. */
+            fih_read_size = (uint32_t)req[9];
+            sblock_input_size = req[9] >> 32;
+            /*
+             * At this call site [rbp-0x160] is the wrapper's fourth
+             * argument, not an output-buffer size.  Its value is allowed to
+             * vary between callers and must not be used to validate the
+             * mailbox request.  The request itself gives the two exact
+             * extents in req[9]; validate those and every range we write.
+             */
+            /* req[4], req[6] and req[7] are the physical destinations which
+             * the real secure module writes.  They are stable across the
+             * supported kernels even when the caller keeps the corresponding
+             * virtual pointers in different (or optional) registers. */
+            int fih_range_valid = is_dmem_range(req[6], PPR_FIH_SIZE);
+            int sblock_range_valid = is_dmem_range(req[7], 0x3000);
+            int icv_range_valid = is_dmem_range(req[4], PPR_FIH_SIZE);
+            if(!fih_range_valid)
+                ppr_request_malformed |= 1ull << 0;
+            if(!sblock_range_valid)
+                ppr_request_malformed |= 1ull << 1;
+            if(!icv_range_valid)
+                ppr_request_malformed |= 1ull << 2;
+            if(fih_read_size != PPR_FIH_SIZE)
+                ppr_request_malformed |= 1ull << 3;
+            if(sblock_input_size != 0x3000)
+                ppr_request_malformed |= 1ull << 4;
+            if(fih_range_valid && sblock_range_valid && icv_range_valid
+            && (((req[4] | req[6] | req[7]) & (PPR_FIH_SIZE - 1))
+             || dmem_ranges_overlap(req[6], PPR_FIH_SIZE, req[7], 0x3000)
+             || dmem_ranges_overlap(req[6], PPR_FIH_SIZE,
+                                    req[4], PPR_FIH_SIZE)
+             || dmem_ranges_overlap(req[7], 0x3000,
+                                    req[4], PPR_FIH_SIZE)))
+                ppr_request_malformed |= 1ull << 5;
+        }
+        uint64_t latch_td = 0;
+        int ppr_plaintext_latched = ppr_verify_plaintext_pending
+                                  && !ppr_request_malformed
+                                  && consume_current_ppr_plaintext_latch(
+                                         &latch_td);
+#if KSTUFF_OBS
+        if(is_ppr_verify_image)
+        {
+            __atomic_store_n(&shared_area.metrics.ppr_verify_last_malformed,
+                             ppr_request_malformed, __ATOMIC_RELAXED);
+            __atomic_store_n(&shared_area.metrics.ppr_verify_last_latch_td,
+                             latch_td, __ATOMIC_RELAXED);
+        }
+#endif
+#if KSTUFF_OBS
+        if(is_ppr_verify_image)
+        {
+            log_word(0x5050524d42583332ull); /* "PPRMBX32" */
+            log_word(lr);
+            log_word(ppr_verify_image_lr);
+            log_word(latch_td);
+            log_word(ppr_plaintext_latched);
+            log_word(ppr_request_malformed);
+            log_word(__atomic_load_n(
+                &shared_area.metrics.ppr_plaintext_hook_stage,
+                __ATOMIC_RELAXED));
+            log_word(__atomic_load_n(
+                &shared_area.metrics.ppr_plaintext_hook_value,
+                __ATOMIC_RELAXED));
+        }
+#endif
+
+        /*
+         * The legacy path enters through verifySuperBlock. PPR instead enters
+         * through verifyImage at a firmware-specific return address.
+         * For an explicitly armed PLAINTEXT_NOAUTH profile the secure module
+         * is intentionally not entered:
+         * return its normal success shape with two distinct sentinel handles
+         * and both completed read sizes. sm_pfs normally uses the vnode/FIH
+         * context in request qwords 10/11 to read and fill a 0x1000-byte FIH
+         * buffer plus a 0x5a0-byte verified superblock. Calling VFS from the
+         * debug exception is unsafe, so protocol v8 snapshots both file ranges
+         * before nmount and this trap supplies the same output buffers.
+         * registerMountKey indexes a global RB tree by handle alone.  The
+         * emulated result therefore jumps past both key registrations and the
+         * pair-tree insertion: the sentinels never enter either global table.
+         * A retained-pair counter lets the later unmount trap complete the
+         * matching sceSblPfsClearKey tree miss without touching unrelated
+         * pairs.
+         * The kernel-side verify_ppr_sblock_100 continuation still checks the
+         * returned read sizes and parses the superblock metadata. Later in the
+         * same nmount, exact ppfs_get_{xts,cmac}_index entry traps return the
+         * positive sentinel indices ff/fe without allocating nonexistent keys.
+         * A53 uses the invalid XTS/AES index ff as the private request marker:
+         * signed outer reads also carry CMAC/SHA fe, while an unsigned inner
+         * PFS may omit that SHA key.  The request is diverted to plaintext
+         * IDMA before ff can be used as a real KMB index.
+         *
+         * The FIH geometry, tweak, NAPS metadata offsets and the superblock
+         * remain the bytes from the package.  This is required even without
+         * authentication: the kernel derives its outer ICV/fsmeta table
+         * geometry from FIH +0x90 before any read request reaches A53.
+         * verifySuperBlock keeps its established DMEM layout. At the
+         * verifyImage mailbox call the secure-module output buffers have not
+         * been filled yet, so the exact LR, request shape, firmware ABI
+         * profile and one-shot same-thread latch are all required.
+         * The active same-thread session authorizes only the two exact sentinel
+         * key-index calls from setup_a53io_pkg_keys and is explicitly cleared
+         * by ppr_mount after sceFsMountPprPkg returns.
+         */
+        uint16_t pfs_mode = 0;
+        int mode_error = 0;
+        if(is_ppr_verify_image)
+        {
+            if(ppr_plaintext_latched)
+                pfs_mode = PPR_PFS_CONTROL_PLAINTEXT_NOAUTH;
+            else
+                mode_error = EPERM;
+        }
+        else
+        {
+            memcpy(&pfs_mode, DMEM+req[3]+0x1c, sizeof(pfs_mode));
+        }
+        if(!mode_error && ppr_abi
+        && pfs_mode == PPR_PFS_CONTROL_PLAINTEXT_NOAUTH)
+        {
+            /* sm_pfs command 0x0001 returns the fixed verified header size. */
+            const uint64_t sblock_read_size = 0x5a0;
+            struct kstuff_ppr_plaintext_staging* staging =
+                &shared_area.ppr_plaintext_staging;
+#if KSTUFF_OBS
+            uint64_t staged_fih_magic = load_u64_unaligned(staging->fih);
+            uint64_t staged_sblock_header =
+                load_u64_unaligned(staging->superblock);
+#endif
+            int copy_error = ppr_request_malformed ? EINVAL : 0;
+            int pair_retained = 0;
+            if(!copy_error
+            && (__atomic_load_n(&staging->td, __ATOMIC_ACQUIRE) != latch_td
+             || !__atomic_load_n(&staging->ready, __ATOMIC_ACQUIRE)))
+                copy_error = EPERM;
+            if(!copy_error)
+            {
+                pair_retained = retain_current_ppr_plaintext_key_pair(latch_td);
+                if(!pair_retained)
+                    copy_error = EBUSY;
+            }
+            if(!copy_error)
+                memcpy(DMEM + req[6], staging->fih, sizeof(staging->fih));
+            /*
+             * Keep the FIH block geometry at +0x90 intact.  Clearing it makes
+             * set_icv_table publish offset=0 and rejects metadata LBNs in the
+             * kernel before they reach the A53 no-auth selector.
+             */
+            if(!copy_error)
+            {
+                memcpy(DMEM + req[7], staging->superblock,
+                       sblock_read_size);
+                memset(DMEM + req[7] + sblock_read_size, 0,
+                       sblock_input_size - sblock_read_size);
+            }
+            /* Keep the staged, marker-bearing mode 0x0d on the stock path. */
+            if(!copy_error)
+                memcpy(DMEM + req[7] + 0x1c,
+                       &(const uint16_t){PPR_PFS_MODE_NATIVE_ENCRYPTED},
+                       sizeof(uint16_t));
+            if(!copy_error)
+                memset(DMEM + req[4], 0, fih_read_size);
+#if KSTUFF_OBS
+            log_word(0x50505256494d4737ull); /* "PPRVIM7" */
+            log_word(req[6]);
+            log_word(req[7]);
+            log_word(req[4]);
+            log_word(req[9]);
+            log_word(ppr_request_malformed);
+            log_word(copy_error);
+            log_word(staged_fih_magic);
+            log_word(staged_sblock_header);
+#endif
+            if(copy_error)
+            {
+                if(pair_retained)
+                    (void)rollback_current_ppr_plaintext_key_pair(latch_td);
+                return 0;
+            }
+
+            struct
+            {
+                uint32_t command;
+                uint32_t status;
+                uint32_t ekey;
+                uint32_t skey;
+                uint64_t fih_read_size;
+                uint64_t sblock_read_size;
+            } fake_resp = {
+                .command = 0,
+                .status = 0,
+                .ekey = PPR_PFS_PLAINTEXT_XTS_HANDLE,
+                .skey = PPR_PFS_PLAINTEXT_CMAC_HANDLE,
+                .fih_read_size = fih_read_size,
+                .sblock_read_size = sblock_read_size,
+            };
+            _Static_assert(sizeof(fake_resp) == 32,
+                           "unexpected verifyImage response layout");
+            /*
+             * Recreate the generation-specific values that the skipped
+             * wrapper code would have prepared, then enter its no-key success
+             * block. That block combines the pair and publishes both
+             * completed read sizes. We enter it after (and deliberately
+             * without executing)
+             * registerMountKey() or the pair RB-tree insertion.
+             */
+            uint64_t success_stack_value = PPR_PFS_PLAINTEXT_XTS_HANDLE;
+            int success_stack_offset = 0;
+            if(ppr_abi->verify_success_abi
+                                      == PPR_VERIFY_SUCCESS_R13_STACK_158)
+                success_stack_offset = -0x158;
+            else if(ppr_abi->verify_success_abi
+                                      == PPR_VERIFY_SUCCESS_R13_STACK_150)
+                success_stack_offset = -0x150;
+            else if(ppr_abi->verify_success_abi
+                                      == PPR_VERIFY_SUCCESS_PACKED_STACK_158)
+            {
+                success_stack_offset = -0x158;
+                /*
+                 * The 10.x/11.x no-key continuation loads this qword and
+                 * publishes its upper dword as ekey (XTS) and its lower
+                 * dword as skey (CMAC).  Keep that order distinct from the
+                 * in-memory key-index pair used later by ppfs cleanup.
+                 */
+                success_stack_value =
+                    ((uint64_t)PPR_PFS_PLAINTEXT_XTS_HANDLE << 32)
+                  | PPR_PFS_PLAINTEXT_CMAC_HANDLE;
+            }
+            if(success_stack_offset
+            && copy_u64_to_kernel(
+                   (uint64_t)((int64_t)regs[RBP] + success_stack_offset),
+                   success_stack_value))
+            {
+                (void)rollback_current_ppr_plaintext_key_pair(latch_td);
+                return 0;
+            }
+            /* Publish output data before the response that makes the caller
+             * treat those physical buffers as completed. */
+            __atomic_thread_fence(__ATOMIC_RELEASE);
+            /*
+             * Publish the mailbox response last.  If the stack-local write
+             * fails, the stock secure-module call can still run without
+             * observing a partially forged response header.
+             */
+            if(copy_to_kernel(regs[RDX], &fake_resp, sizeof(fake_resp)))
+            {
+                (void)rollback_current_ppr_plaintext_key_pair(latch_td);
+                return 0;
+            }
+            if(ppr_abi->verify_success_abi == PPR_VERIFY_SUCCESS_R14_R15)
+            {
+                regs[R14] = PPR_PFS_PLAINTEXT_XTS_HANDLE;
+                regs[R15] = PPR_PFS_PLAINTEXT_CMAC_HANDLE;
+            }
+            else if(ppr_abi->verify_success_abi
+                                      != PPR_VERIFY_SUCCESS_PACKED_STACK_158)
+            {
+                regs[R13] = PPR_PFS_PLAINTEXT_CMAC_HANDLE;
+            }
+            release_ppr_plaintext_staging(latch_td);
+            regs[RIP] = (uint64_t)ppr_pfs_verify_image_no_key_success;
+            regs[RAX] = 0;
+            regs[RSP] += 8;
+            METRIC_INC(verify_superblock_emulated);
+            observe_current_syscall_emulated();
+            return 1;
+        }
+
+        /* The PPR command has a different request layout from verifySuperBlock. */
+        if(is_ppr_verify_image)
+            return 0;
+
         uint64_t p_eekpfs = 0;
         memcpy(&p_eekpfs, DMEM+req[2]+32, 8);
         uint8_t eekpfs[256] = {0};
@@ -440,12 +1769,46 @@ void handle_fpkg_trap(uint64_t* regs, uint32_t trapno)
     }
 }
 
-static const uint64_t dbgregs_for_nmount[6] = {
-    (uint64_t)sceSblServiceMailbox, 0, 0, 0,
-    0, 0x401
-};
-
-void handle_fpkg_syscall(uint64_t* regs)
+void handle_fpkg_syscall(uint64_t* regs, int is_nmount, int is_ppr)
 {
-    start_syscall_with_dbgregs(regs, dbgregs_for_nmount);
+    uint64_t dbgregs_for_fpkg[6] = {
+        (uint64_t)sceSblServiceMailbox, 0, 0, 0,
+        0, 0x401
+    };
+    /*
+     * Native nmount must keep its original debug-register footprint.  Arm
+     * the two profile-selected key-index entry breakpoints only for the same
+     * thread that explicitly owns an ARMED/ACTIVE PLAINTEXT_NOAUTH session;
+     * verifyImage changes ARMED to ACTIVE later during this syscall.
+     */
+    int enable_ppr_plaintext_traps = is_ppr && is_nmount
+                                  && current_ppr_plaintext_session_pending();
+    /* Exact firmware profiles make this pure address arithmetic.  No kernel
+     * text is read on ARM, mount, unmount, or #DB paths. */
+    int cleanup_pending = is_ppr && !is_nmount
+                        && has_ppr_plaintext_key_pair();
+    uint64_t put_cmac = cleanup_pending
+                      ? ppr_pfs_plaintext_put_cmac_call() : 0;
+    uint64_t put_xts = cleanup_pending
+                     ? ppr_pfs_plaintext_put_xts_call() : 0;
+    uint64_t get_xts = enable_ppr_plaintext_traps
+                     ? ppr_pfs_plaintext_get_xts_index() : 0;
+    uint64_t get_cmac = enable_ppr_plaintext_traps
+                      ? ppr_pfs_plaintext_get_cmac_index() : 0;
+    uint64_t clear_key_missing = ppr_pfs_plaintext_clear_key_missing();
+    if(get_xts && get_cmac && clear_key_missing)
+    {
+        dbgregs_for_fpkg[1] = get_xts;
+        dbgregs_for_fpkg[2] = get_cmac;
+        dbgregs_for_fpkg[3] = clear_key_missing;
+        dbgregs_for_fpkg[5] = 0x455; /* local DR0..DR3 + reserved bit 10 */
+    }
+    else if(cleanup_pending && put_cmac && put_xts && clear_key_missing)
+    {
+        dbgregs_for_fpkg[1] = put_cmac;
+        dbgregs_for_fpkg[2] = put_xts;
+        dbgregs_for_fpkg[3] = clear_key_missing;
+        dbgregs_for_fpkg[5] = 0x455; /* local DR0..DR3 + reserved bit 10 */
+    }
+    start_syscall_with_dbgregs(regs, dbgregs_for_fpkg);
 }

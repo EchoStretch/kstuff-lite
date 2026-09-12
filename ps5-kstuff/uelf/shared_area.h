@@ -8,16 +8,46 @@
 
 enum {
     SHARED_FAKE_KEY_SLOTS = 63,
+    SHARED_PPR_PLAINTEXT_LATCH_SLOTS = 8,
+    SHARED_FPKG_SCOPE_SLOTS = 8,
     SHARED_LOG_WORD_CAP = 16,
     SHARED_LOG_MSG_CAP = 488,
     SHARED_IOCTL_COM_TRACK_CAP = 128,
 };
 
 #if KSTUFF_OBS
-enum { SHARED_AREA_SIZE = 8192 };
+enum { SHARED_AREA_SIZE = 16384 };
 #else
-enum { SHARED_AREA_SIZE = 2048 };
+enum { SHARED_AREA_SIZE = 8192 };
 #endif
+
+struct kstuff_ppr_plaintext_latch
+{
+    uint64_t td;
+    uint64_t state;
+};
+
+struct kstuff_fpkg_scope
+{
+    uint64_t td;
+    uint64_t state;
+};
+
+/*
+ * verifyImage command 0x101 normally asks sm_pfs to read these two regions
+ * through its file-image handle.  PLAINTEXT_NOAUTH snapshots them explicitly
+ * before nmount so the mailbox trap never has to call VFS while the debug
+ * exception is active.
+ */
+struct kstuff_ppr_plaintext_staging
+{
+    uint64_t td;
+    uint64_t ready;
+    uint64_t bytes_written;
+    uint64_t reserved;
+    uint8_t fih[0x1000];
+    uint8_t superblock[0x5a0];
+};
 
 struct kstuff_metrics
 {
@@ -322,6 +352,29 @@ struct kstuff_metrics
     uint64_t fpu_xsave_cycles_max;
     uint64_t fpu_xrstor_cycles_total;
     uint64_t fpu_xrstor_cycles_max;
+
+    /* Profile-selected per-mount PLAINTEXT_NOAUTH G6 marker. */
+    uint64_t ppr_plaintext_g6_traps;
+    uint64_t ppr_plaintext_profile_matches;
+    uint64_t ppr_plaintext_g6_applied;
+    uint64_t ppr_plaintext_g6_bad_initial_indices;
+    uint64_t ppr_plaintext_g6_copy_failures;
+
+    /* Last exactly matched verifyImage request and ShellCore hook state. */
+    uint64_t ppr_verify_last_lr;
+    uint64_t ppr_verify_expected_lr;
+    uint64_t ppr_verify_last_req0;
+    uint64_t ppr_verify_last_req3;
+    uint64_t ppr_verify_last_fih_pa;
+    uint64_t ppr_verify_last_sblock_pa;
+    uint64_t ppr_verify_last_icv_pa;
+    uint64_t ppr_verify_last_malformed;
+    uint64_t ppr_verify_last_latch_td;
+    uint64_t ppr_plaintext_hook_stage;
+    uint64_t ppr_plaintext_hook_value;
+
+    /* Synthetic cleanup call-site handling. */
+    uint64_t ppr_plaintext_cleanup_put_emulated;
 };
 
 struct kstuff_word_log_entry
@@ -367,6 +420,9 @@ struct kstuff_snapshot
     struct kstuff_word_log word_log;
     struct kstuff_ioctl_com_table ioctl_com_table;
     struct kstuff_msg_log msg_log;
+    /* Exact lifetime gauge; kept outside metrics so concurrent retain/release
+     * cannot leave a mirrored diagnostic value stale. */
+    uint64_t ppr_plaintext_key_pairs_outstanding;
 };
 
 struct shared_area_layout
@@ -375,6 +431,20 @@ struct shared_area_layout
     uint64_t ready_mask;
     char pad[16];
     uint8_t key_data[SHARED_FAKE_KEY_SLOTS][32];
+    struct kstuff_ppr_plaintext_latch
+        ppr_plaintext_latches[SHARED_PPR_PLAINTEXT_LATCH_SLOTS];
+    /* Only ShellCore's four public game-package wrappers create these
+     * per-thread scopes. nmount/unmount remain completely stock elsewhere. */
+    struct kstuff_fpkg_scope fpkg_scopes[SHARED_FPKG_SCOPE_SLOTS];
+    struct kstuff_ppr_plaintext_staging ppr_plaintext_staging;
+    /* Synthetic FE/FF indices identify retained FD/FC handles.  They survive
+     * cleanup_a53io_pkg_keys and end at the matching sceSblPfsClearKey pair
+     * tree-miss in a later unmount syscall. */
+    /* XTS and CMAC are created and destroyed as one synthetic pair.  Keep a
+     * single lifetime counter so an interrupted path cannot leave the two
+     * halves permanently out of sync. */
+    uint64_t ppr_plaintext_key_pairs_outstanding;
+    uint64_t ppr_plaintext_key_pairs_reserved;
 #if KSTUFF_OBS
     struct kstuff_metrics metrics;
     struct kstuff_word_log word_log;
@@ -400,15 +470,15 @@ extern struct shared_area_layout shared_area;
 #define METRIC_MAX(field, value) do { } while(0)
 #endif
 
-_Static_assert(sizeof(struct kstuff_metrics) == 2176, "unexpected metrics size");
+_Static_assert(sizeof(struct kstuff_metrics) == 2312, "unexpected metrics size");
 _Static_assert(sizeof(struct kstuff_word_log) == 264, "unexpected word log size");
 _Static_assert(sizeof(struct kstuff_ioctl_com_entry) == 24, "unexpected ioctl com entry size");
 _Static_assert(sizeof(struct kstuff_ioctl_com_table) == 3088, "unexpected ioctl com table size");
 _Static_assert(sizeof(struct kstuff_msg_log) == 504, "unexpected message log size");
-_Static_assert(sizeof(struct kstuff_snapshot) == 6048, "unexpected snapshot size");
+_Static_assert(sizeof(struct kstuff_snapshot) == 6192, "unexpected snapshot size");
 #if KSTUFF_OBS
-_Static_assert(sizeof(struct shared_area_layout) == 8080, "unexpected shared_area size");
+_Static_assert(sizeof(struct shared_area_layout) == 14056, "unexpected shared_area size");
 #else
-_Static_assert(sizeof(struct shared_area_layout) == 2048, "unexpected non-OBS shared_area size");
+_Static_assert(sizeof(struct shared_area_layout) == 7888, "unexpected non-OBS shared_area size");
 #endif
 _Static_assert(sizeof(struct shared_area_layout) <= SHARED_AREA_SIZE, "shared_area must fit in configured mapping");

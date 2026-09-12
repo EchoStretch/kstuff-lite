@@ -17,7 +17,7 @@ endif
 all: $(ALL_TARGETS)
 
 clean:
-	rm -f payload.elf payload.bin debug-reader.elf debug-reader.bin freebsd-loader kelf kelf.o structs.h structs.inc uelf/uelf uelf/uelf.bin uelf/crt.o $(BUILD_CONFIG)
+	rm -f payload.elf payload.bin debug-reader.elf debug-reader.bin freebsd-loader kelf kelf.o structs.h structs.inc uelf/uelf uelf/uelf.bin uelf/crt.o shellcore_hook/ppr_mount_940.bin shellcore_hook/ppr_mount_940_blob.o $(BUILD_CONFIG)
 
 .PHONY: FORCE
 FORCE:
@@ -40,8 +40,8 @@ $(BUILD_CONFIG): FORCE
 structs.inc: structs-ps5.inc
 	cp structs-ps5.inc structs.inc
 
-payload.elf: ../lib/lib-elf-ps5.a ../prosper0gdb/prosper0gdb.o main.c kelf uelf/uelf.bin $(BUILD_CONFIG) shellcore_patches/*
-	gcc $(PAYLOAD_OPT) -isystem ../freebsd-headers -nostdinc -nostdlib -fno-stack-protector -static ../lib/lib-elf-ps5.a ../prosper0gdb/prosper0gdb.o $(EXTRA_CFLAGS) -DKSTUFF_OBS=$(KSTUFF_OBS) main.c -DPS5KEK ../prosper0gdb/dbg.c -Wl,-gc-sections -o payload.elf -fPIE -ffreestanding -no-pie -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384
+payload.elf: ../lib/lib-elf-ps5.a ../prosper0gdb/prosper0gdb.o main.c kelf uelf/uelf.bin shellcore_hook/ppr_mount_940_blob.o $(BUILD_CONFIG) shellcore_patches/*
+	gcc $(PAYLOAD_OPT) -isystem ../freebsd-headers -nostdinc -nostdlib -fno-stack-protector -static ../lib/lib-elf-ps5.a ../prosper0gdb/prosper0gdb.o shellcore_hook/ppr_mount_940_blob.o $(EXTRA_CFLAGS) -DKSTUFF_OBS=$(KSTUFF_OBS) main.c -DPS5KEK ../prosper0gdb/dbg.c -Wl,-gc-sections -o payload.elf -fPIE -ffreestanding -no-pie -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384
 
 payloa%.bin: payloa%.elf
 	objcopy $< --only-section .text --only-section .data --only-section .bss --only-section .rodata -O binary $@
@@ -55,6 +55,13 @@ kelf: kelf.o
 
 structs.h: structs.inc
 	sed 's/^%/#/' structs.inc > structs.h
+
+shellcore_hook/ppr_mount_940.bin: shellcore_hook/ppr_mount_940.asm $(BUILD_CONFIG)
+	yasm -DKSTUFF_OBS=$(KSTUFF_OBS) -f bin $< -o $@
+	@test $$(wc -c < $@) -le $$((0x4000)) || (echo "ppr_mount_940.bin exceeds the ShellCore wrapper mapping"; rm -f $@; false)
+
+shellcore_hook/ppr_mount_940_blob.o: shellcore_hook/ppr_mount_940_blob.asm shellcore_hook/ppr_mount_940.bin
+	yasm -f elf64 $< -o $@
 
 uelf/crt.o: uelf/crt.asm
 	yasm uelf/crt.asm -f elf64 -o uelf/crt.o

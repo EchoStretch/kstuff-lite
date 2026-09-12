@@ -326,6 +326,13 @@ int copy_shared_area_snapshot(uint64_t dst, uint64_t sz)
         return EFAULT;
     if(copy_to_kernel_untracked(dst + offsetof(struct kstuff_snapshot, msg_log), &msg_log, sizeof(msg_log)))
         return EFAULT;
+    uint64_t ppr_key_pairs = __atomic_load_n(
+        &shared_area.ppr_plaintext_key_pairs_outstanding, __ATOMIC_ACQUIRE);
+    if(copy_to_kernel_untracked(
+            dst + offsetof(struct kstuff_snapshot,
+                           ppr_plaintext_key_pairs_outstanding),
+            &ppr_key_pairs, sizeof(ppr_key_pairs)))
+        return EFAULT;
     return 0;
 }
 

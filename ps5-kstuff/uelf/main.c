@@ -84,8 +84,7 @@ void handle_syscall(uint64_t* regs, int allow_kekcall)
         RETURN_HANDLE_SYSCALL();
     }
 #ifndef FREEBSD
-    if(IS(mprotect)
-         || IS_PPR(mdbg_call))
+    if(IS(mprotect) || IS_PPR(mdbg_call))
     {
         METRIC_INC(syscall_fix_dispatches);
         observe_syscall_armed(IS(mprotect) ? KSTUFF_SYSCALL_MPROTECT : KSTUFF_SYSCALL_MDBG_CALL);
@@ -94,16 +93,22 @@ void handle_syscall(uint64_t* regs, int allow_kekcall)
     }
     if(IS(nmount))
     {
+        int is_ppr = 0;
+        if(!current_fpkg_syscall_scope(1, &is_ppr))
+            RETURN_HANDLE_SYSCALL();
         METRIC_INC(syscall_fpkg_dispatches);
         observe_syscall_armed(KSTUFF_SYSCALL_NMOUNT);
-        handle_fpkg_syscall(regs);
+        handle_fpkg_syscall(regs, 1, is_ppr);
         RETURN_HANDLE_SYSCALL();
     }
     if(IS(unmount))
     {
+        int is_ppr = 0;
+        if(!current_fpkg_syscall_scope(0, &is_ppr))
+            RETURN_HANDLE_SYSCALL();
         METRIC_INC(syscall_fpkg_dispatches);
         observe_syscall_armed(KSTUFF_SYSCALL_UNMOUNT);
-        handle_fpkg_syscall(regs);
+        handle_fpkg_syscall(regs, 0, is_ppr);
         RETURN_HANDLE_SYSCALL();
     }
     if(IS(execve))
@@ -290,7 +295,7 @@ static inline int handle_kernel_trap_fast(uint64_t* regs, uint64_t rip)
 {
     if(rip == (uint64_t)sceSblServiceMailbox)
         return try_handle_mailbox_trap(regs);
-    if(rip == (uint64_t)sceSblServiceCryptAsync_deref_singleton)
+    if(is_fpkg_trap_rip(rip))
     {
         if(try_handle_fpkg_trap(regs))
         {
@@ -425,13 +430,19 @@ from_userspace:
     {
         /*
          * TODO(FW_PORT): derive the syscall entry stack layout from the new
-         * kernel's syscall_before path.  Confirm both syscall_rsp_to_rsi and
-         * the 10.00+ extra 0x10 bytes before extending this version rule.
+         * kernel's syscall_before path.  1.xx reserves 0xe8 bytes below RBP
+         * (rather than 0xd8), so its saved syscall-argument block is another
+         * 0x10 bytes above the intercepted RSP.  Confirm this relation and
+         * the 10.00+ extra 0x10 bytes before extending either version rule.
          */
         const uint64_t syscall_extra = (FWVER >= 0x1000 ? 0x10 : 0);
+        const uint64_t syscall_rsi_offset = FWVER <= 0x114
+                                          ? 0x98
+                                          : syscall_rsp_to_rsi
+                                          + syscall_extra;
         uint64_t syscall_target;
         regs[RAX] |= 0xffffull << 48;
-        regs[RSI] = regs[RSP] + syscall_rsp_to_rsi + syscall_extra;
+        regs[RSI] = regs[RSP] + syscall_rsi_offset;
         if(copy_u64_from_kernel(&syscall_target, regs[RAX] + 8))
             RETURN_HANDLE();
         if(push_stack_checked(regs, (const uint64_t[1]){(uint64_t)syscall_after}, 8))
@@ -457,7 +468,9 @@ from_userspace:
         uint64_t lr = frame[0];
         switch(TRAP_KIND(lr))
         {
-        case TRAP_UTILS: handle_utils_trap(regs, TRAP_IDX(lr)); break;
+        case TRAP_UTILS:
+            handle_utils_trap(regs, TRAP_IDX(lr));
+            break;
         case TRAP_KEKCALL: handle_kekcall_trap(regs, TRAP_IDX(lr)); break;
 #ifndef FREEBSD
         case TRAP_FSELF: handle_fself_trap(regs, TRAP_IDX(lr)); break;

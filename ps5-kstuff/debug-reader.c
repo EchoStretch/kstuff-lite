@@ -361,6 +361,40 @@ static void print_metrics(const struct kstuff_metrics* metrics)
     PRINT_FIELD("clear_emu", metrics->clear_key_emulated);
     tee_putc('\n');
 
+    tee_printf("ppr_plaintext_g6");
+    PRINT_FIELD("traps", metrics->ppr_plaintext_g6_traps);
+    PRINT_FIELD("profile", metrics->ppr_plaintext_profile_matches);
+    PRINT_FIELD("applied", metrics->ppr_plaintext_g6_applied);
+    PRINT_FIELD("bad_initial", metrics->ppr_plaintext_g6_bad_initial_indices);
+    PRINT_FIELD("copy_fail", metrics->ppr_plaintext_g6_copy_failures);
+    PRINT_FIELD("put_emu", metrics->ppr_plaintext_cleanup_put_emulated);
+    tee_putc('\n');
+
+    tee_printf("ppr_verify_request");
+    tee_printf(" last_lr=0x%016" PRIx64, metrics->ppr_verify_last_lr);
+    tee_printf(" expected_lr=0x%016" PRIx64,
+               metrics->ppr_verify_expected_lr);
+    tee_printf(" req0=0x%016" PRIx64, metrics->ppr_verify_last_req0);
+    tee_printf(" req3=0x%016" PRIx64, metrics->ppr_verify_last_req3);
+    tee_putc('\n');
+    tee_printf("ppr_verify_outputs");
+    tee_printf(" fih_pa=0x%016" PRIx64,
+               metrics->ppr_verify_last_fih_pa);
+    tee_printf(" sblock_pa=0x%016" PRIx64,
+               metrics->ppr_verify_last_sblock_pa);
+    tee_printf(" icv_pa=0x%016" PRIx64,
+               metrics->ppr_verify_last_icv_pa);
+    tee_printf(" malformed=0x%016" PRIx64,
+               metrics->ppr_verify_last_malformed);
+    tee_printf(" latch_td=0x%016" PRIx64,
+               metrics->ppr_verify_last_latch_td);
+    tee_putc('\n');
+    tee_printf("ppr_hook");
+    PRINT_FIELD("stage", metrics->ppr_plaintext_hook_stage);
+    tee_printf(" value=0x%016" PRIx64,
+               metrics->ppr_plaintext_hook_value);
+    tee_putc('\n');
+
     tee_printf("fpkg_rejects");
     PRINT_FIELD("xts_non_fake", metrics->fpkg_reject_xts_non_fake);
     PRINT_FIELD("hmac_non_fake", metrics->fpkg_reject_hmac_non_fake);
@@ -579,7 +613,9 @@ static void print_new_msg_log(const struct kstuff_snapshot* snapshot, uint64_t* 
 int main(void)
 {
     struct kstuff_snapshot snapshot;
-    const struct timespec delay = {10, 0};
+    /* Keep the host-side trace close enough to retain the last PPR event when
+     * an early-firmware kernel panics immediately after verifyImage. */
+    const struct timespec delay = {1, 0};
 
     setvbuf(stdout, g_stdout_buf, _IOLBF, sizeof(g_stdout_buf));
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -622,6 +658,8 @@ int main(void)
         print_new_msg_log(&snapshot, &msg_seq);
         print_new_word_log(&snapshot, &word_seq);
         print_metrics(&snapshot.metrics);
+        tee_printf("ppr_lifetime outstanding=%" PRIu64 "\n",
+                   snapshot.ppr_plaintext_key_pairs_outstanding);
         print_syscall_stats(&snapshot.metrics);
         print_ioctl_com_table(&snapshot.ioctl_com_table, snapshot.metrics.syscall_ioctl_dispatches);
 
