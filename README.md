@@ -1,6 +1,6 @@
-# kstuff-lite — `1.11-opt`
+# kstuff-lite 
 
-`1.11-opt` builds on the existing kstuff-lite crypto, FSELF, NPDRM, and loader
+`1.12` builds on the existing kstuff-lite crypto, FSELF, NPDRM, and loader
 work. It reduces UELF/KELF transition cost, makes FPU/CR0 handling safer and
 faster, and adds detailed opt-in diagnostics.
 
