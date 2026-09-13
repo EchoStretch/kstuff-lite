@@ -26,6 +26,7 @@ BITS 64
 %define FPKG_SCOPE_PPR_MOUNT             3
 %define FPKG_SCOPE_PPR_UNMOUNT           4
 %define PPR_HOOK_SCOPE_BIT               0x100
+%define PPR_HOOK_PLAINTEXT_BIT           0x200
 
 %define PPR_FIH_SIZE                     0x1000
 %define PPR_SUPERBLOCK_SIZE              0x5A0
@@ -152,6 +153,7 @@ ppr_mount_940_hook:
 
     mov edx, 5                     ; plaintext/no-auth marker accepted
     call ppr_trace
+    or r15d, PPR_HOOK_PLAINTEXT_BIT
 
     ; BEGIN(version=8)
     mov esi, PPR_CONTROL_BEGIN
@@ -175,9 +177,9 @@ ppr_mount_940_hook:
     xor r8d, r8d
     xor r9d, r9d
     call ppr_control
-    jc .call_original
+    jc .fail_plaintext
     test rax, rax
-    jnz .call_original
+    jnz .fail_plaintext
 
 .begin_ready:
     or r15d, 1
@@ -241,7 +243,14 @@ ppr_mount_940_hook:
 .abort_protocol:
     xor r8d, r8d                   ; protocol abort, no mount result
     call ppr_clear
-    and r15d, PPR_HOOK_SCOPE_BIT
+    and r15d, (PPR_HOOK_SCOPE_BIT | PPR_HOOK_PLAINTEXT_BIT)
+
+.fail_plaintext:
+    ; Once the explicit on-disk marker has been accepted, never fall back to
+    ; native verifyImage.  That would turn a recoverable protocol error into
+    ; an IOC wait with plaintext bytes interpreted as authenticated data.
+    mov ebx, 0x80020016            ; SCE kernel EINVAL
+    jmp .leave_scope
 
 .call_original:
     mov rdi, r12
@@ -316,13 +325,17 @@ ppr_mount_940_hook:
 ; Inputs follow the registers captured by kekcall:
 ; RSI=operation, RDX=arg0, R8=arg2, R9=arg3. R10/arg1 is not captured.
 ppr_control:
+    ; SysV requires a 16-byte aligned RSP at a nested call site. All wrapper
+    ; callers enter here with RSP mod 16 = 8 after their CALL instruction.
+    sub rsp, 8
     xor ecx, ecx                    ; getpid+7 moves RCX to syscall R10
     mov rdi, PPR_CONTROL_MAGIC
     mov rax, PPR_CONTROL_SYSCALL
-    ; Keep the patched trampoline address in the instruction stream so the
-    ; wrapper stays freestanding and does not need a writable data mapping.
+    ; Early kernels reject syscall instructions outside libkernel. Keep the
+    ; validated getpid+7 trampoline address in this freestanding blob.
     mov r11, PPR_SYSCALL_TARGET_PLACEHOLDER
     call r11
+    lea rsp, [rsp + 8]                ; preserve syscall carry flag
     ret
 
 ; EDX is the last successfully completed hook stage.  The trace is advisory:

@@ -88,9 +88,11 @@ struct ppr_profile
  * The cleanup call deltas are kept in the same profile so a firmware cannot
  * expose only half of the interception ABI.
  *
- * Every E8 delta below was verified byte-for-byte against the matching retail
- * x86_kernel.elf. Firmware without a matching image in the local corpus is
- * deliberately omitted. No runtime kernel-text probing is performed.
+ * The matching offset header records whether each firmware was statically
+ * revalidated against retail or is still derived from a devkit image.  The E8
+ * deltas below are checked together with those offsets by
+ * tools/validate_ppr_offsets.py when a retail image is available.  No runtime
+ * kernel-text probing is performed.
  */
 static const struct ppr_profile* get_ppr_profile(void)
 {

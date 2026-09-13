@@ -80,7 +80,7 @@ DEF(store_rax_rdi, -0x945fae)
 // hook field therefore names a verified raw INT3 byte in retail RX text.
 DEF(syscall_cfi_table_jmp_int3, -0xb2fff0)
 
-// PPR/fPKG continuations and wrapper-local ABI sites.
+// PPR/fPKG offsets statically revalidated against retail 1.14.elf.
 DEF(ppr_pfs_get_xts_index, -0xf4040)
 DEF(ppr_pfs_get_cmac_index, -0xf3ee0)
 DEF(ppr_pfs_get_xts_return, -0x78f2ff)
