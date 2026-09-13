@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
-"""Find PPR/fPKG offsets in a kernel using a same-firmware reference image.
+r"""Find PPR/fPKG offsets in retail kernels without requiring devkit images.
 
-The reference image is used only to build instruction signatures at the eight
-known PPR sites.  The target kdata anchor is derived independently from the
-ordinary CR0 helper offsets, and every discovered PPR address is checked as a
-connected ABI (get-index calls/returns, cleanup calls and verifyImage mailbox
-call).  Existing PPR values are therefore never copied to the target.
+By default, the scanner chooses the nearest structurally validated reference
+from the target's directory.  References must belong to the same PPR ABI
+family and have populated offsets in the repository headers.  Pointing the
+scanner at a retail directory is therefore sufficient; no devkit corpus is
+needed.  An explicit reference can still be supplied for manual investigations.
 
-Typical use when a missing retail kernel becomes available:
+The reference is used only to build instruction signatures at the eight known
+PPR sites.  The target kdata anchor is derived independently from ordinary CR0
+helper offsets, and every discovered PPR address is checked as a connected ABI
+(get-index calls/returns, cleanup calls and verifyImage mailbox call). Existing
+PPR values are therefore never copied to the target.
 
-  python tools/find_ppr_offsets.py C:\kernels\retail\10.00.elf \
-      --reference-dir C:\kernels\devkit
+Typical use when a missing retail kernel is added to the retail corpus:
+
+  python tools/find_ppr_offsets.py C:\kernels\retail\11.60.elf
+
+An explicit retail reference directory may also be used:
+
+  python tools/find_ppr_offsets.py C:\kernels\new\11.60.elf \
+      --reference-dir C:\kernels\retail
 """
 
 from __future__ import annotations
@@ -18,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import struct
 import sys
 from typing import Iterator, NamedTuple
 
@@ -56,6 +67,11 @@ class Signature(NamedTuple):
 class LocatedSite(NamedTuple):
     address: int
     method: str
+
+
+class ReferenceChoice(NamedTuple):
+    path: Path
+    reason: str
 
 
 def signed_hex(value: int) -> str:
@@ -218,24 +234,80 @@ def locate_cleanup(reference_segments: list[Segment], reference_address: int,
                        f"{body.method}-via-body"), [body.address]
 
 
-def select_reference(reference_dir: Path, major: int, minor: int) -> Path:
+def ppr_profile_key(major: int, minor: int) -> int:
+    return 101 if major == 1 and minor >= 5 else major
+
+
+def reference_is_consistent(path: Path, header_dir: Path) -> tuple[bool, str]:
+    try:
+        key, major, minor = version_key(path)
+        header = header_dir / f"{key}.h"
+        if not header.is_file():
+            return False, "no offset header"
+        offsets = parse_header(header)
+        if any(not offsets.get(name, 0) for name in PPR_NAMES):
+            return False, "PPR offsets are not populated"
+        segments = load_image(path)
+        try:
+            anchor = segment_kdata_anchor(segments)
+        except ValueError:
+            anchor, _score = infer_kdata_anchor(segments, offsets)
+        errors = connected_abi_errors(
+            segments, offsets, anchor, major, minor
+        )
+        if errors:
+            return False, "; ".join(errors)
+        return True, "connected PPR ABI validated"
+    except (OSError, ValueError, struct.error) as exc:
+        return False, str(exc)
+
+
+def select_reference(reference_dir: Path, major: int, minor: int,
+                     header_dir: Path) -> ReferenceChoice:
+    if not reference_dir.is_dir():
+        raise ValueError(f"reference directory not found: {reference_dir}")
+    target_profile = ppr_profile_key(major, minor)
+    if target_profile not in PROFILES:
+        raise ValueError(
+            f"no PPR ABI profile for firmware family {major}.{minor:02d}"
+        )
+
+    ranked = []
+    rejected = []
+    for path in reference_dir.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in (".elf", ".bin"):
+            continue
+        try:
+            _key, reference_major, reference_minor = version_key(path)
+        except ValueError:
+            continue
+        if ppr_profile_key(reference_major, reference_minor) != target_profile:
+            continue
+        distance = abs((reference_major * 100 + reference_minor)
+                       - (major * 100 + minor))
+        ranked.append((distance, path.name.lower(), path))
+
+    for distance, _name, path in sorted(ranked):
+        usable, reason = reference_is_consistent(path, header_dir)
+        if usable:
+            relation = "same firmware" if distance == 0 else \
+                       f"nearest validated retail ABI ({path.stem})"
+            return ReferenceChoice(path, relation)
+        rejected.append(f"{path.name}: {reason}")
+
     stem = f"{major}.{minor:02d}"
-    exact = reference_dir / f"{stem}.elf"
-    if exact.is_file():
-        return exact
-    candidates = sorted(reference_dir.glob(f"{stem}.*.elf"))
-    if len(candidates) == 1:
-        return candidates[0]
-    if not candidates:
-        raise ValueError(f"no same-firmware reference for {stem}")
-    names = ", ".join(path.name for path in candidates)
-    raise ValueError(f"ambiguous references for {stem}: {names}")
+    detail = ""
+    if rejected:
+        detail = "; rejected " + " | ".join(rejected)
+    raise ValueError(
+        f"no validated reference for {stem} in {reference_dir}{detail}"
+    )
 
 
 def connected_abi_errors(segments: list[Segment], offsets: dict[str, int],
                          anchor: int, major: int, minor: int) -> list[str]:
     address = lambda name: (anchor + offsets[name]) & MASK64
-    profile_key = 101 if major == 1 and minor >= 5 else major
+    profile_key = ppr_profile_key(major, minor)
     if profile_key not in PROFILES:
         return [f"no PPR ABI profile for firmware family {major}"]
     profile = PROFILES[profile_key]
@@ -272,7 +344,8 @@ def connected_abi_errors(segments: list[Segment], offsets: dict[str, int],
     return errors
 
 
-def scan(target: Path, reference: Path, header_dir: Path) -> dict[str, object]:
+def scan(target: Path, reference: Path, header_dir: Path,
+         reference_reason: str = "explicit reference") -> dict[str, object]:
     key, major, minor = version_key(target)
     header = header_dir / f"{key}.h"
     if not header.is_file():
@@ -399,6 +472,7 @@ def scan(target: Path, reference: Path, header_dir: Path) -> dict[str, object]:
     return {
         "target": str(target),
         "reference": str(reference),
+        "reference_reason": reference_reason,
         "header": str(header),
         "reference_header": str(reference_header),
         "target_kdata_anchor": f"{target_anchor:#x}",
@@ -424,7 +498,8 @@ def iter_targets(paths: list[Path]) -> Iterator[Path]:
 
 def print_human(report: dict[str, object]) -> None:
     print(f"\n{report['target']}")
-    print(f"  reference = {report['reference']}")
+    print(f"  reference = {report['reference']} "
+          f"[{report['reference_reason']}]")
     print(f"  kdata_base = {report['target_kdata_anchor']} "
           f"[anchor score {report['target_anchor_score']}]")
     sites = report["sites"]
@@ -452,13 +527,17 @@ def print_human(report: dict[str, object]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("targets", nargs="+", type=Path,
                         help="target retail ELF/BIN or directory")
     parser.add_argument("--reference", type=Path,
-                        help="explicit same-firmware reference (one target only)")
+                        help="explicit reference image (one target only)")
     parser.add_argument("--reference-dir", type=Path,
-                        help="directory containing same-firmware reference ELFs")
+                        help="retail reference corpus; defaults to each "
+                             "target's directory")
     parser.add_argument("--headers", type=Path,
                         default=Path(__file__).resolve().parents[1]
                                 / "prosper0gdb" / "offsets")
@@ -467,20 +546,27 @@ def main() -> int:
     targets = list(iter_targets(args.targets))
     if args.reference and len(targets) != 1:
         parser.error("--reference requires exactly one target")
-    if not args.reference and not args.reference_dir:
-        parser.error("provide --reference or --reference-dir")
 
     reports = []
     failures = 0
     for target in targets:
         try:
             _key, major, minor = version_key(target)
-            reference = args.reference or select_reference(
-                args.reference_dir, major, minor
-            )
-            reports.append(scan(target, reference, args.headers))
+            if args.reference:
+                reference = args.reference
+                reference_reason = "explicit reference"
+            else:
+                reference_dir = args.reference_dir or target.parent
+                choice = select_reference(
+                    reference_dir, major, minor, args.headers
+                )
+                reference = choice.path
+                reference_reason = choice.reason
+            reports.append(scan(
+                target, reference, args.headers, reference_reason
+            ))
             failures += reports[-1]["status"] != "complete"
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, struct.error) as exc:
             failures += 1
             reports.append({
                 "target": str(target),

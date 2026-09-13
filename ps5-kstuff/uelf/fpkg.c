@@ -174,7 +174,7 @@ static const struct ppr_profile* get_ppr_profile(void)
         return &fw7;
     case 0x800: case 0x820: case 0x840: case 0x860:
         return &fw8;
-    case 0x900: case 0x920: case 0x940: case 0x960:
+    case 0x900: case 0x905: case 0x920: case 0x940: case 0x960:
         return &fw9;
     case 0x1000: case 0x1001: case 0x1020: case 0x1040: case 0x1060:
         return &fw10;
