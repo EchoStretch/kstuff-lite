@@ -30,7 +30,7 @@ DEF(sysents, 0x16f720)
 DEF(sysents_ps4, 0x167170)
 DEF(sysentvec, 0xca0cd8)
 DEF(sysentvec_ps4, 0xca0e50)
-DEF(sceSblServiceMailbox, -0x675df0)
+DEF(sceSblServiceMailbox, -0x615df0)
 DEF(sceSblAuthMgrSmIsLoadable2, -0x88a540)
 DEF(syscall_before, -0x7e91bf)
 DEF(syscall_after, -0x7e919c)
@@ -76,15 +76,15 @@ DEF(cr0_write_ret, -0x4C7AD3)
 DEF(store_rax_rdi, -0x9568EE)
 
 
-// PPR/fPKG offsets are devkit-derived (3.00.elf); retail is not validated.
-DEF(ppr_pfs_get_xts_index, -0x115f00)
-DEF(ppr_pfs_get_cmac_index, -0x115da0)
-DEF(ppr_pfs_get_xts_return, -0x85641f)
-DEF(ppr_pfs_get_cmac_return, -0x8563d1)
-DEF(ppr_pfs_cleanup_keys, -0x85e220)
-DEF(ppr_pfs_clear_key_missing, -0x92e1c9)
-DEF(sceSblServiceMailbox_lr_verifyImage, -0x92f68f)
-DEF(ppr_pfs_verify_image_no_key_success, -0x92f1cf)
+// PPR/fPKG offsets
+DEF(ppr_pfs_get_xts_index, -0xb5f00)
+DEF(ppr_pfs_get_cmac_index, -0xb5da0)
+DEF(ppr_pfs_get_xts_return, -0x7f641f)
+DEF(ppr_pfs_get_cmac_return, -0x7f63d1)
+DEF(ppr_pfs_cleanup_keys, -0x7fe220)
+DEF(ppr_pfs_clear_key_missing, -0x8ce1c9)
+DEF(sceSblServiceMailbox_lr_verifyImage, -0x8cf68f)
+DEF(ppr_pfs_verify_image_no_key_success, -0x8cf1cf)
 
 
 // non data-relative offsets

@@ -736,6 +736,7 @@ static const struct shellcore_fpkg_offsets* get_shellcore_fpkg_offsets(void)
     SHELLCORE_FPKG_FW(1100);
     SHELLCORE_FPKG_FW(1120);
     SHELLCORE_FPKG_FW(1140);
+    /* Keep 11.60+ PPR/fPKG offset data disconnected from the runtime hook. */
 #undef SHELLCORE_FPKG_FW
     default: return 0;
     }

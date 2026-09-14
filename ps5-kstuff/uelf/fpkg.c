@@ -180,6 +180,7 @@ static const struct ppr_profile* get_ppr_profile(void)
         return &fw10;
     case 0x1100: case 0x1120: case 0x1140:
         return &fw11;
+    /* 11.60+ offsets are data-only until runtime interception is validated. */
     default:
         return NULL;
     }

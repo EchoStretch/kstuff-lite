@@ -88,12 +88,7 @@ KDATA_OFFSET(syscall_cfi_table_jmp_int3)
 
 ABSOLUTE_OFFSET(p_sysent)
 
-// Optional PPR/fPKG porting inventory.  These entries are populated for the
-// firmware tables from 1.00 through 11.40.  Each populated header says whether
-// its values were revalidated against retail or are still devkit-derived.
-// Keeping them in the common table removes firmware-local address arithmetic
-// from the UELF while allowing newer, not-yet-ported tables to remain valid.
-// ShellCore-relative values stay in ps5-kstuff/shellcore_patches.
+// Optional PPR/fPKG porting inventory.
 OPTIONAL_KDATA_OFFSET(ppr_pfs_get_xts_index)
 OPTIONAL_KDATA_OFFSET(ppr_pfs_get_cmac_index)
 OPTIONAL_KDATA_OFFSET(ppr_pfs_get_xts_return)

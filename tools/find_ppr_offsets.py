@@ -249,9 +249,9 @@ def reference_is_consistent(path: Path, header_dir: Path) -> tuple[bool, str]:
             return False, "PPR offsets are not populated"
         segments = load_image(path)
         try:
-            anchor = segment_kdata_anchor(segments)
-        except ValueError:
             anchor, _score = infer_kdata_anchor(segments, offsets)
+        except ValueError:
+            anchor = segment_kdata_anchor(segments)
         errors = connected_abi_errors(
             segments, offsets, anchor, major, minor
         )
@@ -366,12 +366,12 @@ def scan(target: Path, reference: Path, header_dir: Path,
         target_segments, target_known
     )
     try:
-        reference_anchor = segment_kdata_anchor(reference_segments)
-        reference_anchor_score: int | str = "PT_LOAD"
-    except ValueError:
         reference_anchor, reference_anchor_score = infer_kdata_anchor(
             reference_segments, reference_known
         )
+    except ValueError:
+        reference_anchor = segment_kdata_anchor(reference_segments)
+        reference_anchor_score = "PT_LOAD"
 
     reference_errors = connected_abi_errors(
         reference_segments, reference_known, reference_anchor,

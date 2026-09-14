@@ -75,6 +75,8 @@ PROFILES = {
                 bytes.fromhex("c4 63 fb f0")),
     11: Profile(0x119, 0x149, bytes.fromhex("bb fe ff ff ff"),
                 bytes.fromhex("c4 63 fb f0")),
+    12: Profile(0x119, 0x149, bytes.fromhex("bb fe ff ff ff"),
+                bytes.fromhex("c4 63 fb f0")),
 }
 
 

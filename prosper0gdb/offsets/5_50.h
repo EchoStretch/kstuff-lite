@@ -76,7 +76,7 @@ DEF(cr0_write_ret, -0x5419C3)
 DEF(store_rax_rdi, -0xA0C32E)
 
 
-// PPR/fPKG offsets are devkit-derived (5.50.elf); retail is not validated.
+// PPR/fPKG offsets
 DEF(ppr_pfs_get_xts_index, -0x124610)
 DEF(ppr_pfs_get_cmac_index, -0x1244b0)
 DEF(ppr_pfs_get_xts_return, -0x8a19f2)
