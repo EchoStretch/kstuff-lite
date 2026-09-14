@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Statically validate retail PPR offsets against local PS5 kernel images.
 
-The checker derives the kdata anchor from existing, independently recognizable
-CR0 helper instructions.  It then checks the relationships that make the PPR
-trap ABI safe: both get-index calls and return addresses, cleanup call sites,
-the clear-key miss instruction, the verifyImage mailbox return address, and the
-success continuation.  This is a static audit; console testing is still needed
-before calling a firmware fully supported.
+The checker uses the kernel ELF's post-text PT_LOAD address as the kdata anchor.
+For raw/incomplete images without that segment it falls back to independently
+recognizable CR0 helper instructions.  It checks the common syscall/debug-
+register gadgets and mailbox return addresses, then the relationships that make
+the PPR trap ABI safe: both get-index calls and return addresses, cleanup call
+sites, the clear-key miss instruction, the verifyImage mailbox return address,
+and the success continuation.  This is a static audit; console testing is still
+needed before calling a firmware fully supported.
 """
 
 from __future__ import annotations
@@ -33,6 +35,40 @@ PPR_NAMES = (
     "ppr_pfs_clear_key_missing",
     "sceSblServiceMailbox_lr_verifyImage",
     "ppr_pfs_verify_image_no_key_success",
+)
+
+MAILBOX_LR_NAMES = (
+    "sceSblServiceMailbox_lr_verifyHeader",
+    "sceSblServiceMailbox_lr_loadSelfSegment",
+    "sceSblServiceMailbox_lr_decryptSelfBlock",
+    "sceSblServiceMailbox_lr_decryptMultipleSelfBlocks",
+    "sceSblServiceMailbox_lr_sceSblAuthMgrSmFinalize",
+    "sceSblServiceMailbox_lr_verifySuperBlock",
+    "sceSblServiceMailbox_lr_sceSblPfsClearKey_1",
+    "sceSblServiceMailbox_lr_sceSblPfsClearKey_2",
+    "sceSblServiceMailbox_lr_npdrm_cmd_5",
+    "sceSblServiceMailbox_lr_npdrm_cmd_6",
+)
+
+COMMON_SIGNATURES = {
+    "doreti_iret": bytes.fromhex("48 cf"),
+    "rep_movsb_pop_rbp_ret": bytes.fromhex("f3 a4 5d c3"),
+    "rdmsr_start": bytes.fromhex("0f 32"),
+    "wrmsr_ret": bytes.fromhex("0f 30 c3"),
+    "mov_rax_cr3": bytes.fromhex("0f 20 d8"),
+    "sceSblServiceMailbox": bytes.fromhex("55 48 89 e5"),
+    "sceSblAuthMgrSmIsLoadable2": bytes.fromhex("55 48 89 e5"),
+    "malloc": bytes.fromhex("55 48 89 e5"),
+    "sceSblPfsSetKeys": bytes.fromhex("55 48 89 e5"),
+    "sceSblServiceCryptAsync": bytes.fromhex("55 48 89 e5"),
+    "copyin": bytes.fromhex("55 48 89 e5"),
+    "copyout": bytes.fromhex("55 48 89 e5"),
+    "crypt_message_resolve": bytes.fromhex("55 48 89 e5"),
+    "mov_rax_cr0": bytes.fromhex("0f 20 c0"),
+}
+
+CPU_SWITCH_TAIL_SIGNATURE = bytes.fromhex(
+    "48 8b 47 78 0f 23 c0 48 8b 87 80 00 00 00 0f 23 c8"
 )
 
 ANCHOR_SIGNATURES = {
@@ -234,11 +270,34 @@ def validate(path: Path, header_dir: Path) -> list[str]:
         return ["PPR is not enabled in the matching table"]
 
     segments = load_image(path)
-    anchor, _score = infer_kdata_anchor(segments, offsets)
+    try:
+        anchor = segment_kdata_anchor(segments)
+    except ValueError:
+        anchor, _score = infer_kdata_anchor(segments, offsets)
     address = lambda name: (anchor + offsets[name]) & MASK64
     profile_key = 101 if major == 1 and minor >= 5 else major
     profile = PROFILES[profile_key]
     errors = []
+
+    for name, signature in COMMON_SIGNATURES.items():
+        if bytes_at(segments, address(name), len(signature)) != signature:
+            errors.append(f"{name}: unexpected instruction sequence")
+
+    firmware = major * 0x100 + minor
+    cpu_switch_tail_delta = 0x704 if firmware <= 0x270 else 0x874
+    cpu_switch_tail = address("cpu_switch") + cpu_switch_tail_delta
+    if bytes_at(segments, cpu_switch_tail,
+                len(CPU_SWITCH_TAIL_SIGNATURE)) != CPU_SWITCH_TAIL_SIGNATURE:
+        errors.append("cpu_switch: unexpected debug-register restore tail")
+
+    mailbox = address("sceSblServiceMailbox")
+    for name in MAILBOX_LR_NAMES:
+        return_address = address(name)
+        target = rel32_call_target(segments,
+                                   (return_address - 5) & MASK64)
+        if target != mailbox:
+            got = "not a call" if target is None else f"target {target:#x}"
+            errors.append(f"{name}: {got}, expected {mailbox:#x}")
 
     for name in PPR_NAMES:
         if not bytes_at(segments, address(name), 1):
@@ -268,7 +327,6 @@ def validate(path: Path, header_dir: Path) -> list[str]:
         errors.append("ppr_pfs_clear_key_missing: unexpected result assignment")
 
     verify_lr = address("sceSblServiceMailbox_lr_verifyImage")
-    mailbox = address("sceSblServiceMailbox")
     target = rel32_call_target(segments, (verify_lr - 5) & MASK64)
     if target != mailbox:
         got = "not a call" if target is None else f"target {target:#x}"

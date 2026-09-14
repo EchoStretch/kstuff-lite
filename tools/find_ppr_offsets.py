@@ -8,10 +8,11 @@ scanner at a retail directory is therefore sufficient; no devkit corpus is
 needed.  An explicit reference can still be supplied for manual investigations.
 
 The reference is used only to build instruction signatures at the eight known
-PPR sites.  The target kdata anchor is derived independently from ordinary CR0
-helper offsets, and every discovered PPR address is checked as a connected ABI
-(get-index calls/returns, cleanup calls and verifyImage mailbox call). Existing
-PPR values are therefore never copied to the target.
+PPR sites.  The target kdata anchor comes from the kernel ELF's post-text
+PT_LOAD segment, with ordinary CR0 helper offsets used only as a fallback for
+raw/incomplete images.  Every discovered PPR address is checked as a connected
+ABI (get-index calls/returns, cleanup calls and verifyImage mailbox call).
+Existing PPR values are therefore never copied to the target.
 
 Typical use when a missing retail kernel is added to the retail corpus:
 
@@ -249,9 +250,9 @@ def reference_is_consistent(path: Path, header_dir: Path) -> tuple[bool, str]:
             return False, "PPR offsets are not populated"
         segments = load_image(path)
         try:
-            anchor, _score = infer_kdata_anchor(segments, offsets)
-        except ValueError:
             anchor = segment_kdata_anchor(segments)
+        except ValueError:
+            anchor, _score = infer_kdata_anchor(segments, offsets)
         errors = connected_abi_errors(
             segments, offsets, anchor, major, minor
         )
@@ -338,8 +339,8 @@ def connected_abi_errors(segments: list[Segment], offsets: dict[str, int],
             != profile.clear_prefix:
         errors.append("clear-key miss: unexpected result assignment")
     success = address("ppr_pfs_verify_image_no_key_success")
-    if bytes_at(segments, success, len(profile.success_prefix)) \
-            != profile.success_prefix:
+    if bytes_at(segments, success, len(profile.success_signature)) \
+            != profile.success_signature:
         errors.append("verifyImage no-key continuation: unexpected instruction")
     return errors
 
@@ -362,16 +363,20 @@ def scan(target: Path, reference: Path, header_dir: Path,
 
     target_segments = load_image(target)
     reference_segments = load_image(reference)
-    target_anchor, target_anchor_score = infer_kdata_anchor(
-        target_segments, target_known
-    )
     try:
+        target_anchor = segment_kdata_anchor(target_segments)
+        target_anchor_score: int | str = "PT_LOAD"
+    except ValueError:
+        target_anchor, target_anchor_score = infer_kdata_anchor(
+            target_segments, target_known
+        )
+    try:
+        reference_anchor = segment_kdata_anchor(reference_segments)
+        reference_anchor_score = "PT_LOAD"
+    except ValueError:
         reference_anchor, reference_anchor_score = infer_kdata_anchor(
             reference_segments, reference_known
         )
-    except ValueError:
-        reference_anchor = segment_kdata_anchor(reference_segments)
-        reference_anchor_score = "PT_LOAD"
 
     reference_errors = connected_abi_errors(
         reference_segments, reference_known, reference_anchor,
