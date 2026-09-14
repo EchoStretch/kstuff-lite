@@ -1594,6 +1594,27 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
             };
             _Static_assert(sizeof(fake_resp) == 32,
                            "unexpected verifyImage response layout");
+            size_t fake_resp_size = sizeof(fake_resp);
+            memcpy(req, &fake_resp, sizeof(fake_resp));
+            if(ppr_abi->verify_success_abi == PPR_VERIFY_SUCCESS_R14_R15
+            || ppr_abi->verify_success_abi
+                                      == PPR_VERIFY_SUCCESS_R13_STACK_158)
+            {
+                /*
+                 * The 1.xx-6.xx wrapper uses the old in/out request ABI.
+                 * After the mailbox returns it reads the completed FIH and
+                 * superblock sizes from dwords at request+0x4c and +0x54.
+                 * Merely returning the newer 32-byte response header leaves
+                 * the input capacity (0x3000) in the first slot and zero in
+                 * the second.  Besides reporting the wrong FIH length, that
+                 * makes the wrapper skip the superblock's movbe conversion.
+                 */
+                memcpy((uint8_t*)req + 0x4c, &fih_read_size,
+                       sizeof(uint32_t));
+                memcpy((uint8_t*)req + 0x54, &sblock_read_size,
+                       sizeof(uint32_t));
+                fake_resp_size = 0x58;
+            }
             /*
              * Recreate the generation-specific values that the skipped
              * wrapper code would have prepared, then enter its no-key success
@@ -1640,7 +1661,7 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
              * fails, the stock secure-module call can still run without
              * observing a partially forged response header.
              */
-            if(copy_to_kernel(regs[RDX], &fake_resp, sizeof(fake_resp)))
+            if(copy_to_kernel(regs[RDX], req, fake_resp_size))
             {
                 (void)rollback_current_ppr_plaintext_key_pair(latch_td);
                 return 0;

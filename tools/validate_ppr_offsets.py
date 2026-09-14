@@ -47,36 +47,62 @@ class Profile(NamedTuple):
     cleanup_cmac_delta: int
     cleanup_xts_delta: int
     clear_prefix: bytes
-    success_prefix: bytes
+    success_signature: bytes
+
+
+VERIFY_SUCCESS_EARLY = bytes.fromhex(
+    "49 c1 e7 20 8b 85 1c ff ff ff 45 31 e4 4d 09 f7 "
+    "44 8b b5 24 ff ff ff 48 89 85 a8 fe ff ff"
+)
+VERIFY_SUCCESS_FW5_6 = bytes.fromhex(
+    "49 c1 e5 20 4c 03 ad a8 fe ff ff 8b 85 1c ff ff ff "
+    "44 8b bd 24 ff ff ff 45 31 e4 48 89 85 a0 fe ff ff"
+)
+VERIFY_SUCCESS_FW7 = bytes.fromhex(
+    "49 c1 e5 20 4c 03 ad b0 fe ff ff 8b 85 e0 fe ff ff "
+    "44 8b bd e8 fe ff ff 45 31 e4 48 89 85 a0 fe ff ff"
+)
+VERIFY_SUCCESS_FW8_9 = bytes.fromhex(
+    "49 c1 e5 20 4c 03 ad b0 fe ff ff 8b 85 e0 fe ff ff "
+    "8b 9d e8 fe ff ff 45 31 e4 48 89 85 a0 fe ff ff"
+)
+VERIFY_SUCCESS_FW10_11 = bytes.fromhex(
+    "c4 63 fb f0 b5 a8 fe ff ff 20 8b 85 e0 fe ff ff "
+    "8b 9d e8 fe ff ff 45 31 e4 48 89 85 a0 fe ff ff"
+)
+VERIFY_SUCCESS_FW12 = bytes.fromhex(
+    "c4 63 fb f0 b5 b0 fe ff ff 20 8b 85 e0 fe ff ff "
+    "8b 9d e8 fe ff ff 45 31 e4 48 89 85 98 fe ff ff"
+)
 
 
 PROFILES = {
     1: Profile(0x126, 0x15A, bytes.fromhex("bb fe ff ff ff"),
-               bytes.fromhex("49 c1 e7 20")),
+               VERIFY_SUCCESS_EARLY),
     101: Profile(0x145, 0x179, bytes.fromhex("bb fe ff ff ff"),
-                 bytes.fromhex("49 c1 e7 20")),
+                 VERIFY_SUCCESS_EARLY),
     2: Profile(0x144, 0x178, bytes.fromhex("bb fe ff ff ff"),
-               bytes.fromhex("49 c1 e7 20")),
+               VERIFY_SUCCESS_EARLY),
     3: Profile(0x137, 0x166, bytes.fromhex("41 be fe ff ff ff"),
-               bytes.fromhex("49 c1 e7 20")),
+               VERIFY_SUCCESS_EARLY),
     4: Profile(0x13D, 0x16C, bytes.fromhex("41 bc fe ff ff ff"),
-               bytes.fromhex("49 c1 e7 20")),
+               VERIFY_SUCCESS_EARLY),
     5: Profile(0x138, 0x167, bytes.fromhex("41 bc fe ff ff ff"),
-               bytes.fromhex("49 c1 e5 20")),
+               VERIFY_SUCCESS_FW5_6),
     6: Profile(0x138, 0x167, bytes.fromhex("41 bc fe ff ff ff"),
-               bytes.fromhex("49 c1 e5 20")),
+               VERIFY_SUCCESS_FW5_6),
     7: Profile(0x11C, 0x14B, bytes.fromhex("41 bf fe ff ff ff"),
-               bytes.fromhex("49 c1 e5 20")),
+               VERIFY_SUCCESS_FW7),
     8: Profile(0x117, 0x147, bytes.fromhex("bb fe ff ff ff"),
-               bytes.fromhex("49 c1 e5 20")),
+               VERIFY_SUCCESS_FW8_9),
     9: Profile(0x119, 0x149, bytes.fromhex("bb fe ff ff ff"),
-               bytes.fromhex("49 c1 e5 20")),
+               VERIFY_SUCCESS_FW8_9),
     10: Profile(0x119, 0x149, bytes.fromhex("bb fe ff ff ff"),
-                bytes.fromhex("c4 63 fb f0")),
+                VERIFY_SUCCESS_FW10_11),
     11: Profile(0x119, 0x149, bytes.fromhex("bb fe ff ff ff"),
-                bytes.fromhex("c4 63 fb f0")),
+                VERIFY_SUCCESS_FW10_11),
     12: Profile(0x119, 0x149, bytes.fromhex("bb fe ff ff ff"),
-                bytes.fromhex("c4 63 fb f0")),
+                VERIFY_SUCCESS_FW12),
 }
 
 
@@ -249,9 +275,9 @@ def validate(path: Path, header_dir: Path) -> list[str]:
         errors.append(f"verifyImage LR: {got}, expected {mailbox:#x}")
 
     success = address("ppr_pfs_verify_image_no_key_success")
-    if bytes_at(segments, success, len(profile.success_prefix)) \
-            != profile.success_prefix:
-        errors.append("verifyImage no-key continuation: unexpected instruction")
+    if bytes_at(segments, success, len(profile.success_signature)) \
+            != profile.success_signature:
+        errors.append("verifyImage no-key continuation: unexpected ABI sequence")
     return errors
 
 
