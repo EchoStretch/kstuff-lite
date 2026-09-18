@@ -70,13 +70,13 @@ DEF(crypt_singleton_array, 0x2d99830)
 DEF(mov_rax_cr0, -0x9b6661)
 DEF(syscall_cfi_table_jmp_int3, -0x949d50)
 
-DEF(cr0_load, -0x8A67AC)
-DEF(cr0_clear_store, -0x4FE510)
-DEF(cr0_write_ret, -0x4C7A93)
-DEF(store_rax_rdi, -0x9568EE)
+DEF(cr0_load, -0x9067AC)
+DEF(cr0_clear_store, -0x55E510)
+DEF(cr0_write_ret, -0x527A93)
+DEF(store_rax_rdi, -0x9B68EE)
 
 
-// PPR/fPKG offsets verified against the matching kernel image.
+// PPR/fPKG offsets
 DEF(ppr_pfs_get_xts_index, -0x115ec0)
 DEF(ppr_pfs_get_cmac_index, -0x115d60)
 DEF(ppr_pfs_get_xts_return, -0x8563df)

@@ -74,7 +74,7 @@ DEF(cr0_write_ret, -0x4f6037)
 DEF(store_rax_rdi, -0x96e1ee)
 DEF(syscall_cfi_table_jmp_int3, -0x903018)
 
-// PPR/fPKG continuations and wrapper-local ABI sites.
+// PPR/fPKG offsets statically revalidated against retail 2.00.elf.
 DEF(ppr_pfs_get_xts_index, -0x107640)
 DEF(ppr_pfs_get_cmac_index, -0x1074e0)
 DEF(ppr_pfs_get_xts_return, -0x8112df)

@@ -10,6 +10,9 @@ static const struct shellcore_fpkg_offsets shellcore_fpkg_offsets_250 = {
     .pread_plt = 0x12a3a10,
     .mount_ppr_pkg_plt = 0x12a5610,
     .getpid_plt = 0x12a2640,
+    .game_mount_calls = {0x4cff43, 0x4d2929, 0x4d2bce},
+    .game_umount_calls = {0x4d2ff3, 0x4d3150},
+    .ppr_umount_call = 0x4d3da0,
 };
 
 static struct shellcore_patch shellcore_patches_250_retail[] = {

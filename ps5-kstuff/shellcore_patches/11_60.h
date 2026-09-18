@@ -26,7 +26,7 @@ static struct shellcore_patch shellcore_patches_1160_retail[] = {
     {0xaf63ea, "\xEB", 1}, // fix trophies not unlocking in certain games
     {0xAD3873, "\xeb\x03", 2}, // disable game error message
 
-    {0x318AC0, "\x90\xe9", 2}, // PS4 Disc Installer Patch 1
+    {0x318AA0, "\x90\xe9", 2}, // PS4 Disc Installer Patch 1
     {0x318B1A, "\x90\xe9", 2}, // PS5 Disc Installer Patch 1
     {0x318C1C, "\xeb", 1}, // PS4 PKG Installer Patch 1
     {0x318CF0, "\xeb", 1}, // PS5 PKG Installer Patch 1

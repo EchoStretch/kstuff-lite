@@ -77,7 +77,7 @@ DEF(cr0_write_ret, -0x4F5B07) // IDA 0x67A4F9
 DEF(store_rax_rdi, -0x96E52E) // IDA 0x201AD2
 
 
-// PPR/fPKG continuations and wrapper-local ABI sites.
+// PPR/fPKG offsets statically revalidated against retail 2.30.elf.
 DEF(ppr_pfs_get_xts_index, -0x106c90)
 DEF(ppr_pfs_get_cmac_index, -0x106b30)
 DEF(ppr_pfs_get_xts_return, -0x8115bf)

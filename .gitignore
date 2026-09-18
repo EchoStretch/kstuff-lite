@@ -24,6 +24,7 @@ refs/*
 /ps5-kstuff/debug-reader.elf
 /ps5-kstuff/.build-config
 logs/
+__pycache__/
 *.bin
 *.elf
 *.o

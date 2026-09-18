@@ -37,7 +37,7 @@ static struct shellcore_patch shellcore_patches_510_retail[] = {
     {0x299BAB, "\x90\xE9", 2}, //PS4 Disc Installer Patch 1
     {0x299C28, "\x90\xE9", 2}, //PS5 Disc Installer Patch 1
     {0x299D2B, "\xEB", 1}, //PS4 PKG Installer Patch 1
-    {0x298F2F, "\xEB", 1}, //PS5 PKG Installer Patch 1
+    {0x299DFF, "\xEB", 1}, //PS5 PKG Installer Patch 1
     {0x29A266, "\x90\xE9", 2}, //PS4 PKG Installer Patch 2
     {0x29A437, "\xeb", 1}, //PS5 PKG Installer Patch 2
     {0x29A805, "\x90\xE9", 2}, //PS4 PKG Installer Patch 3

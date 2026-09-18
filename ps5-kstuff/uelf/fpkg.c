@@ -88,9 +88,11 @@ struct ppr_profile
  * The cleanup call deltas are kept in the same profile so a firmware cannot
  * expose only half of the interception ABI.
  *
- * Every E8 delta below was verified byte-for-byte against the matching retail
- * x86_kernel.elf. Firmware without a matching image in the local corpus is
- * deliberately omitted. No runtime kernel-text probing is performed.
+ * The matching offset header records whether each firmware was statically
+ * revalidated against retail or is still derived from a devkit image.  The E8
+ * deltas below are checked together with those offsets by
+ * tools/validate_ppr_offsets.py when a retail image is available.  No runtime
+ * kernel-text probing is performed.
  */
 static const struct ppr_profile* get_ppr_profile(void)
 {
@@ -172,12 +174,13 @@ static const struct ppr_profile* get_ppr_profile(void)
         return &fw7;
     case 0x800: case 0x820: case 0x840: case 0x860:
         return &fw8;
-    case 0x900: case 0x920: case 0x940: case 0x960:
+    case 0x900: case 0x905: case 0x920: case 0x940: case 0x960:
         return &fw9;
     case 0x1000: case 0x1001: case 0x1020: case 0x1040: case 0x1060:
         return &fw10;
     case 0x1100: case 0x1120: case 0x1140:
         return &fw11;
+    /* 11.60+ offsets are data-only until runtime interception is validated. */
     default:
         return NULL;
     }
@@ -1591,6 +1594,27 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
             };
             _Static_assert(sizeof(fake_resp) == 32,
                            "unexpected verifyImage response layout");
+            size_t fake_resp_size = sizeof(fake_resp);
+            memcpy(req, &fake_resp, sizeof(fake_resp));
+            if(ppr_abi->verify_success_abi == PPR_VERIFY_SUCCESS_R14_R15
+            || ppr_abi->verify_success_abi
+                                      == PPR_VERIFY_SUCCESS_R13_STACK_158)
+            {
+                /*
+                 * The 1.xx-6.xx wrapper uses the old in/out request ABI.
+                 * After the mailbox returns it reads the completed FIH and
+                 * superblock sizes from dwords at request+0x4c and +0x54.
+                 * Merely returning the newer 32-byte response header leaves
+                 * the input capacity (0x3000) in the first slot and zero in
+                 * the second.  Besides reporting the wrong FIH length, that
+                 * makes the wrapper skip the superblock's movbe conversion.
+                 */
+                memcpy((uint8_t*)req + 0x4c, &fih_read_size,
+                       sizeof(uint32_t));
+                memcpy((uint8_t*)req + 0x54, &sblock_read_size,
+                       sizeof(uint32_t));
+                fake_resp_size = 0x58;
+            }
             /*
              * Recreate the generation-specific values that the skipped
              * wrapper code would have prepared, then enter its no-key success
@@ -1637,7 +1661,7 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
              * fails, the stock secure-module call can still run without
              * observing a partially forged response header.
              */
-            if(copy_to_kernel(regs[RDX], &fake_resp, sizeof(fake_resp)))
+            if(copy_to_kernel(regs[RDX], req, fake_resp_size))
             {
                 (void)rollback_current_ppr_plaintext_key_pair(latch_td);
                 return 0;

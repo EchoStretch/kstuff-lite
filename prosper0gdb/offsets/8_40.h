@@ -76,7 +76,7 @@ DEF(cr0_write_ret, -0x555D83)
 DEF(store_rax_rdi, -0xA2EE6E)
 
 
-// PPR/fPKG offsets verified against the matching kernel image.
+// PPR/fPKG offsets
 DEF(ppr_pfs_get_xts_index, -0x1318c0)
 DEF(ppr_pfs_get_cmac_index, -0x131760)
 DEF(ppr_pfs_get_xts_return, -0x8c7322)
