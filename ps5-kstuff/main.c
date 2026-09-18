@@ -1546,26 +1546,18 @@ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
 #endif
     gdb_remote_syscall("write", 3, 0, (uintptr_t)1, (uintptr_t)"allocating kernel memory... ", (uintptr_t)28);
 
+    uint64_t fwver = r0gdb_get_fw_version() >> 16;
+
 #ifdef USE_INT3_SYSCALL_HOOK
-    // 2.xx and later use a CFI-table thunk which jumps to an INT3-filled
-    // function.  1.xx dispatches sy_call directly, so its verified retail
-    // table points at the raw INT3 byte instead and must not use the CFI finder.
-    uint32_t syscall_hook_fwver = r0gdb_get_fw_version() >> 16;
     int is_kit = sceKernelIsTestKit() || sceKernelIsDevKit();
-    if (syscall_hook_fwver < 0x200) {
-        if (is_kit) {
-            notify("1.xx test/dev kit syscall hook is not supported");
-            r0gdb_cleanup();
-            return 1;
-        }
-        if (offsets.syscall_cfi_table_jmp_int3 == kdata_base
-         || kread8(offsets.syscall_cfi_table_jmp_int3) != 0xcc) {
-            notify("1.xx raw INT3 syscall target is unavailable on this kernel");
-            r0gdb_cleanup();
-            return 1;
-        }
-    }
-    else if (offsets.syscall_cfi_table_jmp_int3 == kdata_base || is_kit) {
+    // this jmp to int3 exists because sony fills certain functions with int3 depending on the console type
+    // retails have the most of these redacted functions, testkits less, devkits even less, presumably "DevKit Intdev" has none
+    // the built in offsets are mostly from retail firmwares so for kits we need to find them again
+    if (offsets.syscall_cfi_table_jmp_int3 == kdata_base || is_kit) {
+        // kcfi was added at fw 2.00, `r0gdb_find_syscall_cfi_table_jmp_int3_addr` wouldnt work on 1.xx so bail
+        // NOTE: since there is no cfi check, on 1.xx `syscall_cfi_table_jmp_int3` can/should point to any 0xCC byte in kernel .text
+        if (fwver < 0x200)
+            die();
         offsets.syscall_cfi_table_jmp_int3 = r0gdb_find_syscall_cfi_table_jmp_int3_addr();
         if (offsets.syscall_cfi_table_jmp_int3 == 0 || offsets.syscall_cfi_table_jmp_int3 == kdata_base)
             die();
@@ -1633,7 +1625,6 @@ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
         0,
     };
 	
-    uint64_t fwver = r0gdb_get_fw_version() >> 16;
     uint64_t values[] = {
         comparison_table,      // comparison_table
         dmem_virt_base,        // dmem
