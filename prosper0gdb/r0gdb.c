@@ -1481,41 +1481,80 @@ static int set_user_gsbase(uint64_t base)
     __builtin_unreachable();
 }
 
-static uint64_t syscall_cfi_table_base = 0;
-static void trace_find_syscall_cfi_table_jmp_int3_addr(uint64_t* regs)
+static uint64_t syscall_cfi_table_traced_sy_call = 0;
+static uint64_t syscall_cfi_table_base_or_end = 0;
+static int syscall_cfi_table_is_end = 0;
+static int trace_find_syscall_cfi_table_base_or_end_start_checks = 0;
+static void trace_find_syscall_cfi_table_base_or_end(uint64_t* regs) 
 {
-    // trace_frame_size
-    static uint64_t prev_prev_frame[168/8];
-    static uint64_t prev_frame[168/8];
-
-    //                 lea     rcx, syscall_cfi_table_base
-    //                 mov     rax, [rbp+var_80]
-    //
-    // syscall_before:
-    //                 mov     rbx, [rax+8]
-    //                 mov     rax, rbx
-    //                 sub     rax, rcx
-    //                 ror     rax, 3
-    //                 cmp     rax, 37Ah
-    //                 ja      cfi_check_fail
-    //                 lea     rsi, [rbp+args]
-    //                 mov     rdi, r14
-    //                 call    rbx
+    static uint64_t prev_frame[168 / 8]; // trace_frame_size
+    
+    // find the `sub reg, reg` to get the cfi table base/end
+    // on older fws its: `sub     reg (sy_call addr), reg (cfi table base)`
+    // on newer fws its: `sub     reg (cfi table end), reg (sy_call addr)`
 
     SKIP_SCHEDULER
-    if (syscall_cfi_table_base != 0)
-        return;
-     
-    if (regs[0] == offsets.syscall_before)
+    if (regs[0] == offsets.syscall_before) 
     {
-        // the syscall_cfi_table_base was loaded into rcx on all fws so far
-        // if this fails then this changed, todo
-        if (prev_prev_frame[6] != prev_frame[6] && // rcx changed
-            (prev_frame[6] < kdata_base && prev_frame[6] > kdata_base - 32 * 1024 * 1024)) // rcx in kernel .text
-            syscall_cfi_table_base = prev_frame[6];
+        // using this to avoid dealing with potential false positives from the cpu_fetch_syscall_args cfi check
+        // which is in the same table as the sy_calls and is checked before
+        trace_find_syscall_cfi_table_base_or_end_start_checks = 1;
+    }
+    if (!trace_find_syscall_cfi_table_base_or_end_start_checks)
+        return;
+
+    if (regs[0] == syscall_cfi_table_traced_sy_call) 
+    {
+        // we are too late, stop tracing
+        regs[2] &= ~0x100;
+        return;
     }
 
-    memcpy(prev_prev_frame, prev_frame, sizeof(prev_prev_frame));
+    int instruction_len = regs[0] - prev_frame[0];
+    int rsp_diff = regs[3] - prev_frame[3];
+    if (instruction_len == 3 && rsp_diff == 0) 
+    {
+        for (int i = 5; i <= 20; i++) 
+        {
+            uint64_t reg_before = prev_frame[i];  // should hold either the sy_call addr or the cfi table end (a kernel ptr either way)
+            uint64_t reg_after = regs[i];         // should hold the offset relative to the table start/end (at most the size of this cfi table)
+            if (reg_before < 0xFFFF800000000000ULL || reg_before > 0xFFFFFFFFFFFFF000ULL || reg_after > 0x8000ULL)
+                continue;
+
+            if (reg_after == 0)
+                continue; // i figured its safer to restart and try a different syscall, which is then guaranteed to be non 0
+
+            // sanity check, some other reg + reg_after should hold reg_before
+            int found_right_reg = 0;
+            for (int j = 5; j <= 20; j++) 
+            {
+                if (j == i) continue;
+                if (regs[j] + reg_after == reg_before) 
+                {
+                    found_right_reg = 1;
+                    break;
+                }
+            }
+            if (!found_right_reg)
+                continue;
+
+            if (reg_before == syscall_cfi_table_traced_sy_call) 
+            {
+                syscall_cfi_table_base_or_end = syscall_cfi_table_traced_sy_call - reg_after;
+                syscall_cfi_table_is_end = 0;
+                regs[2] &= ~0x100;  // stop tracing
+                return;
+            }
+            if (reg_after + syscall_cfi_table_traced_sy_call == reg_before) 
+            {
+                syscall_cfi_table_base_or_end = syscall_cfi_table_traced_sy_call + reg_after;
+                syscall_cfi_table_is_end = 1;
+                regs[2] &= ~0x100;  // stop tracing
+                return;
+            }
+        }
+    }
+
     memcpy(prev_frame, regs, sizeof(prev_frame));
 }
 
@@ -1526,8 +1565,11 @@ uint64_t r0gdb_find_syscall_cfi_table_jmp_int3_addr(void)
 
     if(r0gdb_instrument(0))
         return 0;
+
     int(*p_getppid)() = WRAPPER(getppid);
-    trace_prog = trace_find_syscall_cfi_table_jmp_int3_addr;
+    trace_find_syscall_cfi_table_base_or_end_start_checks = 0;
+    kmemcpy(&syscall_cfi_table_traced_sy_call, (void*)(offsets.sysents + 48*SYS_getppid + 8), 8);
+    trace_prog = trace_find_syscall_cfi_table_base_or_end;
     if(set_trace())
     {
         trace_prog = 0;
@@ -1536,7 +1578,27 @@ uint64_t r0gdb_find_syscall_cfi_table_jmp_int3_addr(void)
     p_getppid();
     trace_prog = 0;
 
-    if (syscall_cfi_table_base == 0)
+    if (syscall_cfi_table_base_or_end == 0)
+    {
+        int(*p_getpid)() = WRAPPER(getpid);
+        trace_find_syscall_cfi_table_base_or_end_start_checks = 0;
+        kmemcpy(&syscall_cfi_table_traced_sy_call, (void*)(offsets.sysents + 48*SYS_getpid + 8), 8);
+        trace_prog = trace_find_syscall_cfi_table_base_or_end;
+        if(set_trace())
+        {
+            trace_prog = 0;
+            return 0;
+        }
+        p_getpid();
+        trace_prog = 0;
+    }
+
+    if (syscall_cfi_table_base_or_end == 0)
+        return 0;
+
+    // some fws have a `mov     rax, gs:0` as the first instruction
+    // set user gsbase, its not used anyway
+    if (set_user_gsbase(kstack - 0x2000))
         return 0;
         
     // make int3 use r0gdb's int1 stuff
@@ -1552,15 +1614,6 @@ uint64_t r0gdb_find_syscall_cfi_table_jmp_int3_addr(void)
     kmemcpy((char*)(offsets.idt+16*3), (char*)&int1_handler, 2);
     kmemcpy((char*)(offsets.idt+16*3+6), (char*)&int1_handler+2, 6);
     kmemcpy((char*)(offsets.idt+16*3+4), &int1_ist_index, 1);
-
-    // some fws have a `mov     rax, gs:0` as the first instruction
-    // set user gsbase, its not used anyway
-    if (set_user_gsbase(kstack - 0x2000))
-    {
-        /* IDT3 was already redirected above; restore it on this error path. */
-        kmemcpy((char*)(offsets.idt+16*3), og_idt3, sizeof(og_idt3));
-        return 0;
-    }
 	
     struct regs regs;
     struct regs regs_before;
@@ -1570,7 +1623,7 @@ uint64_t r0gdb_find_syscall_cfi_table_jmp_int3_addr(void)
     // single step first 700 entries to try and find the jmp to int3
     for (int i = 0; i < 700; i++)
     {
-        uint64_t entry_rip = syscall_cfi_table_base + i * 8;
+        uint64_t entry_rip = syscall_cfi_table_is_end ? (syscall_cfi_table_base_or_end - i * 8) : (syscall_cfi_table_base_or_end + i * 8);
         
         // execute jmp of cfi table entry
         memset(&regs, 0, sizeof(regs));
