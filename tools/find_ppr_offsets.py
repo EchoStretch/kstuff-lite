@@ -209,13 +209,38 @@ def cleanup_body_delta(segments: list[Segment], address: int) -> int:
 
 
 def locate_cleanup(reference_segments: list[Segment], reference_address: int,
-                   target_segments: list[Segment]) \
+                   target_segments: list[Segment], cleanup_cmac_delta: int,
+                   cleanup_xts_delta: int) \
         -> tuple[LocatedSite | None, list[int]]:
     site, candidates = locate_site(
         reference_segments, reference_address, target_segments
     )
     if site is not None:
         return site, candidates
+
+    # 13.xx adds a branch near the beginning of cleanup_a53io_pkg_keys,
+    # invalidating the older entry signature. Its two key release calls retain
+    # a unique local instruction shape. Verify both calls and the entry thunk.
+    pattern = bytes.fromhex("41 8b 7e 3c e8")
+    matches = []
+    for first_load in find_exact(target_segments, pattern):
+        entry = (first_load + 4 - cleanup_cmac_delta) & MASK64
+        second_load = (entry + cleanup_xts_delta - 4) & MASK64
+        if (bytes_at(target_segments, entry, 4)
+                != bytes.fromhex("55 48 89 e5")
+                or bytes_at(target_segments, entry + 0x10, 4)
+                != bytes.fromhex("55 48 89 e5")
+                or bytes_at(target_segments, second_load, 5)
+                != bytes.fromhex("41 8b 7e 38 e8")
+                or rel32_call_target(target_segments, first_load + 4) is None
+                or rel32_call_target(target_segments,
+                                     entry + cleanup_xts_delta) is None):
+            continue
+        matches.append(entry)
+    if len(matches) == 1:
+        return LocatedSite(matches[0], "paired-key-release-calls"), matches
+    if matches:
+        return None, matches
 
     # Newer kernels expose cleanup_a53io_pkg_keys through a short alignment
     # thunk.  Its rel32 jump changes easily, while the actual body is highly
@@ -422,8 +447,13 @@ def scan(target: Path, reference: Path, header_dir: Path,
 
     name = "ppr_pfs_cleanup_keys"
     reference_address = (reference_anchor + reference_known[name]) & MASK64
+    target_profile = PROFILES.get(ppr_profile_key(major, minor))
+    if target_profile is None:
+        raise ValueError(f"no PPR ABI profile for {major}.{minor:02d}")
     site, candidates = locate_cleanup(
-        reference_segments, reference_address, target_segments
+        reference_segments, reference_address, target_segments,
+        target_profile.cleanup_cmac_delta,
+        target_profile.cleanup_xts_delta,
     )
     if site is None:
         ambiguous[name] = [f"{candidate:#x}" for candidate in candidates]

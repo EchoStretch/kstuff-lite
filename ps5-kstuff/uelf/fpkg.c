@@ -66,6 +66,7 @@ enum ppr_verify_success_abi
     PPR_VERIFY_SUCCESS_R13_STACK_158,
     PPR_VERIFY_SUCCESS_R13_STACK_150,
     PPR_VERIFY_SUCCESS_PACKED_STACK_158,
+    PPR_VERIFY_SUCCESS_PACKED_STACK_150,
 };
 
 struct ppr_profile
@@ -151,6 +152,16 @@ static const struct ppr_profile* get_ppr_profile(void)
         R13, R14, R15, RBX, 0x0a,
         PPR_VERIFY_SUCCESS_PACKED_STACK_158,
     };
+    static const struct ppr_profile fw12 = {
+        0x119, 0x149,
+        R13, R14, R15, RBX, 0x0a,
+        PPR_VERIFY_SUCCESS_PACKED_STACK_150,
+    };
+    static const struct ppr_profile fw13 = {
+        0x12b, 0x15b,
+        R13, R14, R15, RBX, 0x0a,
+        PPR_VERIFY_SUCCESS_PACKED_STACK_150,
+    };
 
     switch(FWVER)
     {
@@ -178,9 +189,14 @@ static const struct ppr_profile* get_ppr_profile(void)
         return &fw9;
     case 0x1000: case 0x1001: case 0x1020: case 0x1040: case 0x1060:
         return &fw10;
-    case 0x1100: case 0x1120: case 0x1140:
+    case 0x1100: case 0x1120: case 0x1140: case 0x1160:
         return &fw11;
-    /* 11.60+ offsets are data-only until runtime interception is validated. */
+    case 0x1200: case 0x1202: case 0x1220: case 0x1240:
+    case 0x1260: case 0x1270:
+        return &fw12;
+    case 0x1300: case 0x1320: case 0x1340: case 0x1342:
+    case 0x1360:
+        return &fw13;
     default:
         return NULL;
     }
@@ -1636,11 +1652,15 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
                                       == PPR_VERIFY_SUCCESS_R13_STACK_150)
                 success_stack_offset = -0x150;
             else if(ppr_abi->verify_success_abi
-                                      == PPR_VERIFY_SUCCESS_PACKED_STACK_158)
+                                      == PPR_VERIFY_SUCCESS_PACKED_STACK_158
+                 || ppr_abi->verify_success_abi
+                                      == PPR_VERIFY_SUCCESS_PACKED_STACK_150)
             {
-                success_stack_offset = -0x158;
+                success_stack_offset = ppr_abi->verify_success_abi
+                                      == PPR_VERIFY_SUCCESS_PACKED_STACK_158
+                                     ? -0x158 : -0x150;
                 /*
-                 * The 10.x/11.x no-key continuation loads this qword and
+                 * The 10.x-13.x no-key continuation loads this qword and
                  * publishes its upper dword as ekey (XTS) and its lower
                  * dword as skey (CMAC).  Keep that order distinct from the
                  * in-memory key-index pair used later by ppfs cleanup.
@@ -1676,7 +1696,9 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
                 regs[R15] = PPR_PFS_PLAINTEXT_CMAC_HANDLE;
             }
             else if(ppr_abi->verify_success_abi
-                                      != PPR_VERIFY_SUCCESS_PACKED_STACK_158)
+                                      != PPR_VERIFY_SUCCESS_PACKED_STACK_158
+                 && ppr_abi->verify_success_abi
+                                      != PPR_VERIFY_SUCCESS_PACKED_STACK_150)
             {
                 regs[R13] = PPR_PFS_PLAINTEXT_CMAC_HANDLE;
             }

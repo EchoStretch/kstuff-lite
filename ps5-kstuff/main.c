@@ -951,23 +951,21 @@ static int install_shellcore_ppr_hook(
     size_t game_umount_entry = 0;
     size_t ppr_umount_entry = 0;
 
-    int game_only = (r0gdb_get_fw_version() >> 16) > 0x1140;
-    size_t api_count = game_only ? 2 : 4;
+    const size_t api_count = sizeof(api_got) / sizeof(api_got[0]);
     if(!blob_size || blob_size > sizeof(prepared_blob))
         return shellcore_ppr_fail("fpkg scope: invalid wrapper blob size");
 
     uint32_t required_mask = SHELLCORE_IMPORT_BIT(SHELLCORE_IMPORT_MOUNT_GAME)
-                           | SHELLCORE_IMPORT_BIT(SHELLCORE_IMPORT_UMOUNT_GAME);
-    if(!game_only)
-        required_mask |= SHELLCORE_IMPORT_BIT(SHELLCORE_IMPORT_CLOSE)
-                       | SHELLCORE_IMPORT_BIT(SHELLCORE_IMPORT_OPEN)
-                       | SHELLCORE_IMPORT_BIT(SHELLCORE_IMPORT_PREAD)
-                       | SHELLCORE_IMPORT_BIT(SHELLCORE_IMPORT_MOUNT_PPR)
-                       | SHELLCORE_IMPORT_BIT(SHELLCORE_IMPORT_UMOUNT_PPR);
+                           | SHELLCORE_IMPORT_BIT(SHELLCORE_IMPORT_UMOUNT_GAME)
+                           | SHELLCORE_IMPORT_BIT(SHELLCORE_IMPORT_CLOSE)
+                           | SHELLCORE_IMPORT_BIT(SHELLCORE_IMPORT_OPEN)
+                           | SHELLCORE_IMPORT_BIT(SHELLCORE_IMPORT_PREAD)
+                           | SHELLCORE_IMPORT_BIT(SHELLCORE_IMPORT_MOUNT_PPR)
+                           | SHELLCORE_IMPORT_BIT(SHELLCORE_IMPORT_UMOUNT_PPR);
     if(kstuff_shellcore_imports(pid, shellcore_base, required_mask,
                                 import_got))
         return shellcore_ppr_fail("fpkg scope: ShellCore imports unavailable");
-    for(size_t i = 0; i < (game_only ? 0 : 3); i++)
+    for(size_t i = 0; i < 3; i++)
     {
         uint64_t lazy_plt;
         if(read_shellcore_import(pid, shellcore_base, text_end, import_got[i],

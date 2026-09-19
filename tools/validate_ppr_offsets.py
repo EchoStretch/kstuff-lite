@@ -139,6 +139,8 @@ PROFILES = {
                 VERIFY_SUCCESS_FW10_11),
     12: Profile(0x119, 0x149, bytes.fromhex("bb fe ff ff ff"),
                 VERIFY_SUCCESS_FW12),
+    13: Profile(0x12B, 0x15B, bytes.fromhex("bb fe ff ff ff"),
+                VERIFY_SUCCESS_FW12),
 }
 
 
