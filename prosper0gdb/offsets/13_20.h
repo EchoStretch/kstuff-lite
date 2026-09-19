@@ -76,14 +76,14 @@ DEF(cr0_write_ret, -0x581143)
 DEF(store_rax_rdi, -0x1EE302)
 
 // PPR/fPKG offsets
-DEF(ppr_pfs_get_xts_index, -0x0)
-DEF(ppr_pfs_get_cmac_index, -0x0)
-DEF(ppr_pfs_get_xts_return, -0x0)
-DEF(ppr_pfs_get_cmac_return, -0x0)
-DEF(ppr_pfs_cleanup_keys, -0x0)
-DEF(ppr_pfs_clear_key_missing, -0x0)
-DEF(sceSblServiceMailbox_lr_verifyImage, -0x0)
-DEF(ppr_pfs_verify_image_no_key_success, -0x0)
+DEF(ppr_pfs_get_xts_index, -0x126e90)
+DEF(ppr_pfs_get_cmac_index, -0x126d30)
+DEF(ppr_pfs_get_xts_return, -0x93a5f7)
+DEF(ppr_pfs_get_cmac_return, -0x93a5ac)
+DEF(ppr_pfs_cleanup_keys, -0x945590)
+DEF(ppr_pfs_clear_key_missing, -0xa279ff)
+DEF(sceSblServiceMailbox_lr_verifyImage, -0xa28e9d)
+DEF(ppr_pfs_verify_image_no_key_success, -0xa28b42)
 
 // non data-relative offsets
 DEF(p_sysent, 0xA08)
