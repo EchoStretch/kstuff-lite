@@ -1,0 +1,93 @@
+// offsets/13_60_H
+#ifndef OFFSETS_13_60_H
+#define OFFSETS_13_60_H
+#include "../offsets.h"
+
+START_FW(1360)
+DEF(allproc, 0x28C9E80)
+DEF(idt, 0x2EF4300)
+DEF(gdt_array, 0x2EF55E0)
+DEF(tss_array, 0x2EF6FE0)
+DEF(pcpu_array, 0x2F08F00)
+DEF(doreti_iret, -0xA684C3)
+DEF(add_rsp_iret, doreti_iret - 7)
+DEF(swapgs_add_rsp_iret, doreti_iret - 10)
+DEF(rep_movsb_pop_rbp_ret, -0xA663D6)
+DEF(rdmsr_start, -0xA69BFA)
+DEF(wrmsr_ret, -0xA6AFCC)
+DEF(nop_ret, wrmsr_ret + 2)
+DEF(dr2gpr_start, -0xA6DCB3)
+DEF(gpr2dr_1_start, -0xA6DB9A)
+DEF(gpr2dr_2_start, -0xA6DAA7)
+DEF(mov_cr3_rax_mov_ds, -0xA6D709)
+DEF(mov_rax_cr3, -0x3CDD21)
+DEF(cpu_switch, -0xA6DEA0)
+DEF(mprotect_fix_start, -0x9F4013)
+DEF(mprotect_fix_end, mprotect_fix_start+6)
+DEF(aslr_fix_start, -0x930568)
+DEF(aslr_fix_end, aslr_fix_start-0xE)
+DEF(sysents, 0x1B6E50)
+DEF(sysents_ps4, 0x1AE5C0)
+DEF(sysentvec, 0xDDD8F8)
+DEF(sysentvec_ps4, 0xDDDA70)
+DEF(sceSblServiceMailbox, -0x71B9F0)
+DEF(sceSblAuthMgrSmIsLoadable2, -0x988260)
+DEF(syscall_before, -0x8D056E)
+DEF(syscall_after, -0x8D0546)//Checked
+DEF(malloc, -0xB74B0)//Checked
+DEF(M_something, 0x152D4B0)//Checked
+DEF(loadSelfSegment_epilogue, -0x987B5C)//Checked
+DEF(loadSelfSegment_watchpoint, -0x2FCFE4)
+DEF(loadSelfSegment_watchpoint_lr, -0x987DA7)
+DEF(decryptSelfBlock_watchpoint_lr, -0x987A32)
+DEF(decryptSelfBlock_epilogue, -0x9879C1)
+DEF(decryptMultipleSelfBlocks_watchpoint_lr, -0x9872F9)
+DEF(decryptMultipleSelfBlocks_epilogue, -0x987253)
+DEF(sceSblServiceMailbox_lr_verifyHeader, -0x987F44)
+DEF(sceSblServiceMailbox_lr_loadSelfSegment, -0x987BC9)
+DEF(sceSblServiceMailbox_lr_decryptSelfBlock, -0x98760D)
+DEF(sceSblServiceMailbox_lr_decryptMultipleSelfBlocks, -0x986E52)
+DEF(sceSblServiceMailbox_lr_sceSblAuthMgrSmFinalize, -0x9882D8)
+DEF(sceSblServiceMailbox_lr_verifySuperBlock, -0xA371A6)
+DEF(sceSblServiceMailbox_lr_sceSblPfsClearKey_1, -0xA37832)
+DEF(sceSblServiceMailbox_lr_sceSblPfsClearKey_2, -0xA377CD)
+DEF(sceSblServiceMailbox_lr_npdrm_cmd_5, -0x34F9BA)
+DEF(sceSblServiceMailbox_lr_npdrm_cmd_6, -0x34F785)
+DEF(sceSblPfsSetKeys, -0xA38520)
+DEF(sceSblServiceCryptAsync, -0x9D6FE0)
+DEF(sceSblServiceCryptAsync_deref_singleton, -0x9D6FA6)
+DEF(copyin, -0xA66D80)
+DEF(copyout, -0xA66E30)
+DEF(crypt_message_resolve, -0x4C08F0)
+DEF(justreturn, -0xA686F0)
+DEF(justreturn_pop, justreturn+8)
+DEF(mini_syscore_header, 0xF45A88)
+DEF(pop_all_iret, -0xA68522)
+DEF(pop_all_except_rdi_iret, pop_all_iret+4)
+DEF(push_pop_all_iret, -0xA55EA8)
+DEF(kernel_pmap_store, 0x2E88FF8)
+DEF(crypt_singleton_array, 0x2DCDE70)
+DEF(mov_rax_cr0, -0xA6DE01)
+DEF(syscall_cfi_table_jmp_int3, -0xA591C0)
+
+DEF(cr0_load, -0xA0C42C)
+DEF(cr0_clear_store, -0x5C7ED3)
+DEF(cr0_write_ret, -0x58E983)
+DEF(store_rax_rdi, -0x1F44A2)
+
+// PPR/fPKG offsets
+DEF(ppr_pfs_get_xts_index, -0x0)
+DEF(ppr_pfs_get_cmac_index, -0x0)
+DEF(ppr_pfs_get_xts_return, -0x0)
+DEF(ppr_pfs_get_cmac_return, -0x0)
+DEF(ppr_pfs_cleanup_keys, -0x0)
+DEF(ppr_pfs_clear_key_missing, -0x0)
+DEF(sceSblServiceMailbox_lr_verifyImage, -0x0)
+DEF(ppr_pfs_verify_image_no_key_success, -0x0)
+
+// non data-relative offsets
+DEF(p_sysent, 0xA08)
+#include "offset_list.txt"
+END_FW()
+
+#endif
