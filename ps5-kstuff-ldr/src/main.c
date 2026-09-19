@@ -48,6 +48,8 @@ along with this program; see the file COPYING. If not, see
 #include "mount_helpers.h"
 #include "shellui_patch.h"
 #include "utils.h"
+#include "../../lib/r0gdb-bootstrap.h"
+#include "../../lib/shellcore-imports.h"
 
 asm(".section .rodata\n"
     ".global ___ps5_kstuff_payload_bin\n"
@@ -55,6 +57,8 @@ asm(".section .rodata\n"
     ".incbin \"../../ps5-kstuff/payload.bin\"\n");
 
 extern char ___ps5_kstuff_payload_bin[];
+int shellcore_import_got(int pid, uint64_t image_base, uint32_t required_mask,
+                         uint64_t got[SHELLCORE_IMPORT_COUNT]);
 
 int patch_app_db(void);
 int sceKernelSetProcessName(const char *name);
@@ -414,7 +418,11 @@ int main(void) {
         }
     }
 
-    void (*entry)(payload_args_t*) = base + ehdr->e_entry;
+    void (*entry)(payload_args_t*, uint64_t,
+                  intptr_t (*)(int, uint32_t, const char*),
+                  int (*)(int, const char*, uint32_t*),
+                  kstuff_shellcore_imports_fn) =
+        base + ehdr->e_entry;
     payload_args_t* args = payload_get_args();
 
     // allow dlsym on 5.00+ - https://gist.github.com/TheOfficialFloW/7174351201b5260d7780780f4059bebf#file-exploitnetcontrolimpl-java-L851
@@ -425,7 +433,9 @@ int main(void) {
     kernel_setlong(eboot_segments + 0x08, 0); // addr
     kernel_setlong(eboot_segments + 0x10, 0xFFFFFFFFFFFFFFFFL); // size
 
-    entry(args);
+    entry(args, KSTUFF_DYNLIB_RESOLVER_MAGIC,
+          kernel_dynlib_resolve, kernel_dynlib_handle,
+          shellcore_import_got);
     if(*args->payloadout == 0) {
         puts("patching app.db");
         *args->payloadout = patch_app_db();
