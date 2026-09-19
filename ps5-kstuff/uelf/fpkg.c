@@ -703,12 +703,12 @@ int control_ppr_plaintext_request(uint64_t magic, uint64_t mode,
                                   uint64_t* result)
 {
     /*
-     * "PPRPLAIN", protocol v8. No user pointer is dereferenced: WRITE carries
+     * "PPRPLAIN". No user pointer is dereferenced: WRITE carries
      * 16 snapshot bytes in R8/R9. R10 is deliberately unused because the
      * established kekcall fast snapshot ends at RAX and includes R8/R9.
      */
     *result = 0;
-    if(!get_ppr_profile() || magic != 0x505052504c41494eull)
+    if(magic != 0x505052504c41494eull)
         return EINVAL;
     if(mode == PPR_CONTROL_TRACE)
     {
@@ -743,6 +743,10 @@ int control_ppr_plaintext_request(uint64_t magic, uint64_t mode,
     if((fpkg_scope_for_thread(td) & FPKG_SCOPE_KIND_MASK)
                                       != KSTUFF_FPKG_SCOPE_PPR_MOUNT)
         return EPERM;
+    /* Mount scope tracking also covers firmware without a validated
+     * PLAINTEXT_NOAUTH interception profile. */
+    if(!get_ppr_profile())
+        return EINVAL;
     if(mode == 0)
     {
         if(arg0 != PPR_PLAINTEXT_PROTOCOL_VERSION)
@@ -1471,7 +1475,7 @@ int try_handle_fpkg_mailbox(uint64_t* regs, uint64_t lr)
          * and both completed read sizes. sm_pfs normally uses the vnode/FIH
          * context in request qwords 10/11 to read and fill a 0x1000-byte FIH
          * buffer plus a 0x5a0-byte verified superblock. Calling VFS from the
-         * debug exception is unsafe, so protocol v8 snapshots both file ranges
+         * debug exception is unsafe, so snapshots both file ranges
          * before nmount and this trap supplies the same output buffers.
          * registerMountKey indexes a global RB tree by handle alone.  The
          * emulated result therefore jumps past both key registrations and the

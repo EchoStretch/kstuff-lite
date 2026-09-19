@@ -6,7 +6,7 @@ clean:
 dl.o: dl.c
 	gcc -c -isystem ../freebsd-headers -nostdinc -fno-stack-protector dl.c -o dl.o -fPIE -ffreestanding
 
-crt-elf-c.o: crt-elf-c.c
+crt-elf-c.o: crt-elf-c.c r0gdb-bootstrap.h shellcore-imports.h
 	gcc -c -isystem ../freebsd-headers -nostdinc -fno-stack-protector -O3 crt-elf-c.c -o crt-elf-c.o -fPIE -ffreestanding
 
 crt.o: crt.asm

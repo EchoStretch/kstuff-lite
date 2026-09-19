@@ -40,7 +40,7 @@ $(BUILD_CONFIG): FORCE
 structs.inc: structs-ps5.inc
 	cp structs-ps5.inc structs.inc
 
-payload.elf: ../lib/lib-elf-ps5.a ../prosper0gdb/prosper0gdb.o main.c kelf uelf/uelf.bin shellcore_hook/ppr_mount_940_blob.o $(BUILD_CONFIG) shellcore_patches/*
+payload.elf: ../lib/lib-elf-ps5.a ../lib/shellcore-imports.h ../prosper0gdb/prosper0gdb.o main.c kelf uelf/uelf.bin shellcore_hook/ppr_mount_940_blob.o $(BUILD_CONFIG) shellcore_patches/*
 	gcc $(PAYLOAD_OPT) -isystem ../freebsd-headers -nostdinc -nostdlib -fno-stack-protector -static ../lib/lib-elf-ps5.a ../prosper0gdb/prosper0gdb.o shellcore_hook/ppr_mount_940_blob.o $(EXTRA_CFLAGS) -DKSTUFF_OBS=$(KSTUFF_OBS) main.c -DPS5KEK ../prosper0gdb/dbg.c -Wl,-gc-sections -o payload.elf -fPIE -ffreestanding -no-pie -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384
 
 payloa%.bin: payloa%.elf

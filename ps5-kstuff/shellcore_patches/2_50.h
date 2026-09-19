@@ -1,20 +1,6 @@
 #ifndef SHELLCORE_PATCHES_2_50
 #define SHELLCORE_PATCHES_2_50
 
-static const struct shellcore_fpkg_offsets shellcore_fpkg_offsets_250 = {
-    .ppr_call = 0x4d3601,
-    .ppr_cave = 0x12aa7c0,
-    .ppr_cave_size = 0x1840,
-    .close_plt = 0x12a2970,
-    .open_plt = 0x12a3920,
-    .pread_plt = 0x12a3a10,
-    .mount_ppr_pkg_plt = 0x12a5610,
-    .getpid_plt = 0x12a2640,
-    .game_mount_calls = {0x4cff43, 0x4d2929, 0x4d2bce},
-    .game_umount_calls = {0x4d2ff3, 0x4d3150},
-    .ppr_umount_call = 0x4d3da0,
-};
-
 static struct shellcore_patch shellcore_patches_250_retail[] = {
     /* ScePreorder/security wrapper: 3.00 sub_9D1CA0/sub_9D18A0. */
     {0x88757c, "\x31\xc0\x50\xeb\x08", 5}, // 3.00 0x9d18b1 (selector 1): call sub_889390, force a zero return
