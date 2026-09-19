@@ -663,6 +663,11 @@ struct shellcore_patch
 #include "shellcore_patches/12_40.h"
 #include "shellcore_patches/12_60.h"
 #include "shellcore_patches/12_70.h"
+#include "shellcore_patches/13_00.h"
+#include "shellcore_patches/13_20.h"
+#include "shellcore_patches/13_40.h"
+#include "shellcore_patches/13_42.h"
+#include "shellcore_patches/13_60.h"
 
 extern char _start[];
 
@@ -1222,6 +1227,11 @@ enum kit_type kit = get_kit_type();
     FW(1240);
     FW(1260);
     FW(1270);
+    FW(1300);
+    FW(1320);
+    FW(1340);
+    FW(1342);
+    FW(1360);
 
     default:
         *n_patches = 1;

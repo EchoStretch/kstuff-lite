@@ -92,6 +92,11 @@ extern uint64_t kdata_base;
 #include "offsets/12_40.h"
 #include "offsets/12_60.h"
 #include "offsets/12_70.h"
+#include "offsets/13_00.h"
+#include "offsets/13_20.h"
+#include "offsets/13_40.h"
+#include "offsets/13_42.h"
+#include "offsets/13_60.h"
 
 #undef UNSUPPORTED_CR0_CHAIN_OFFSETS
 
@@ -166,7 +171,12 @@ int set_offsets(void)
     case 0x1240: set_offsets_1240(); break;
     case 0x1260: set_offsets_1260(); break;
     case 0x1270: set_offsets_1270(); break;
-	
+    case 0x1300: set_offsets_1300(); break;
+    case 0x1320: set_offsets_1320(); break;
+    case 0x1340: set_offsets_1340(); break;
+    case 0x1342: set_offsets_1342(); break;
+    case 0x1360: set_offsets_1360(); break;
+
 #endif
     default: return -1;
     }
