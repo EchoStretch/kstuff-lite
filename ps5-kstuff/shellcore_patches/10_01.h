@@ -25,6 +25,11 @@ static struct shellcore_patch shellcore_patches_1001_retail[] = {
     {0xaa9cc1, "\xEB", 1}, // fix trophies not unlocking in certain game
     {0xA86D73, "\xeb\x03", 2}, // disable game error message
 
+    // Allow ps4_nongame_mini launches through the three category checks.
+    {0x607D2A, "\xeb", 1}, // preLaunchCheck
+    {0x607F92, "\xeb", 1}, // category check
+    {0x608259, "\xeb", 1}, // workspace category check
+
     {0x305790, "\x90\xe9", 2}, // PS4 Disc Installer Patch 1
     {0x30580A, "\x90\xe9", 2}, // PS5 Disc Installer Patch 1
     {0x30590C, "\xeb", 1}, // PS4 PKG Installer Patch 1

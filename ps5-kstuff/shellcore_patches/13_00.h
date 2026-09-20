@@ -24,6 +24,11 @@ static struct shellcore_patch shellcore_patches_1300_retail[] = {
     {0x69714A, "\x66\x90", 2}, // force getSceSysDirPath to take isDebuggerOrAppHomeLaunchedApp=1 path, by ArkSama
     {0xBDF9FA, "\xEB", 1}, // fix trophies not unlocking in certain games
     {0xBBC973, "\xeb\x03", 2}, // disable game error message
+
+    // Allow ps4_nongame_mini launches through the three category checks.
+    {0x6C7DB1, "\xeb", 1}, // preLaunchCheck
+    {0x6C8042, "\xeb", 1}, // category check
+    {0x6C8309, "\xeb", 1}, // workspace category check
 	
     {0x369340, "\x90\xe9", 2}, // PS4 Disc Installer Patch 1
     {0x3693BA, "\x90\xe9", 2}, // PS5 Disc Installer Patch 1
