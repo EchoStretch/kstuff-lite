@@ -2,10 +2,9 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ps5/kernel.h>
 
-/* The SDK keeps decrypted relocation and symbol tables in the dynlib object. */
-#include <kernel.h>
-
+#include "shellcore_dynlib_abi.h"
 #include "../../lib/shellcore-imports.h"
 
 enum { SHELLCORE_JUMP_SLOT_RELOCATION = 7 };
@@ -16,8 +15,8 @@ _Static_assert(sizeof(Elf64_Rela) == 24 && sizeof(Elf64_Sym) == 24,
 int shellcore_import_got(int pid, uint64_t image_base, uint32_t required_mask,
                          uint64_t got[SHELLCORE_IMPORT_COUNT])
 {
-    dynlib_obj_t obj;
-    dynlib_dynsec_t dynsec;
+    shellcore_dynlib_obj_t obj;
+    shellcore_dynlib_dynsec_t dynsec;
     unsigned char *tables = NULL;
     int result = -1;
     const uint32_t valid_mask = (1u << SHELLCORE_IMPORT_COUNT) - 1;

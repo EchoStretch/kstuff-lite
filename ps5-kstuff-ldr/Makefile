@@ -25,7 +25,7 @@ endif
 
 LOADER_OPT ?= -O2
 CFLAGS += -Wall -Werror
-CPPFLAGS += -Iinclude -I$(PS5_PAYLOAD_SDK)/src/crt
+CPPFLAGS += -Iinclude
 
 LDFLAGS += -lz \
            -lSceSystemService \
@@ -45,7 +45,7 @@ all: kstuff.elf
 ../ps5-kstuff/payload.bin: .FORCE
 	$(MAKE) -C ../ps5-kstuff/
 
-kstuff.elf: ../ps5-kstuff/payload.bin $(SRC) ../lib/r0gdb-bootstrap.h ../lib/shellcore-imports.h
+kstuff.elf: ../ps5-kstuff/payload.bin $(SRC) include/shellcore_dynlib_abi.h ../lib/r0gdb-bootstrap.h ../lib/shellcore-imports.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LOADER_OPT) $(SRC) -o $@ $(LDFLAGS)
 
 clean:
