@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <sys/sysctl.h>
 #include <sys/types.h>
 #include <sys/event.h>
@@ -13,6 +14,9 @@
 #include <ps5/mdbg.h>
 
 #include "utils.h"
+
+enum { PID_LOOKUP_ERROR = -2, PID_NOT_FOUND = -1 };
+#define SHELLUI_EVENT_RETRY_CHECKS 5
 
 #define LOG_PUTS(s)   \
     {                 \
@@ -218,35 +222,51 @@ static int patch_shellui(int pid) {
 static pid_t find_pid(const char *name) {
     int mib[4] = {1, 14, 8, 0};
     pid_t mypid = getpid();
-    pid_t pid = -1;
+    pid_t pid = PID_NOT_FOUND;
     size_t buf_size;
     uint8_t *buf;
 
     if (sysctl(mib, 4, 0, &buf_size, 0, 0)) {
         LOG_PERROR("sysctl");
-        return -1;
+        return PID_LOOKUP_ERROR;
     }
 
     if (!(buf = malloc(buf_size))) {
         LOG_PERROR("malloc");
-        return -1;
+        return PID_LOOKUP_ERROR;
     }
 
     if (sysctl(mib, 4, buf, &buf_size, 0, 0)) {
         LOG_PERROR("sysctl");
         free(buf);
-        return -1;
+        return PID_LOOKUP_ERROR;
     }
 
-    for (uint8_t *ptr = buf; ptr < (buf + buf_size);) {
-        int ki_structsize = *(int *)ptr;
-        pid_t ki_pid = *(pid_t *)&ptr[72];
-        char *ki_tdname = (char *)&ptr[447];
-
-        ptr += ki_structsize;
-        if (!strcmp(name, ki_tdname) && ki_pid != mypid) {
-            pid = ki_pid;
+    const size_t name_len = strlen(name);
+    for (size_t offset = 0; offset < buf_size;) {
+        int entry_size;
+        if (buf_size - offset < sizeof(entry_size)) {
+            pid = PID_LOOKUP_ERROR;
+            break;
         }
+        memcpy(&entry_size, buf + offset, sizeof(entry_size));
+        if (entry_size < 447 + TDNAMLEN + 1 ||
+            (size_t)entry_size > buf_size - offset) {
+            pid = PID_LOOKUP_ERROR;
+            break;
+        }
+
+        uint8_t *entry = buf + offset;
+        pid_t entry_pid;
+        memcpy(&entry_pid, entry + 72, sizeof(entry_pid));
+        const char *entry_name = (const char *)entry + 447;
+        if (name_len < TDNAMLEN + 1 &&
+            strnlen(entry_name, TDNAMLEN + 1) == name_len &&
+            memcmp(name, entry_name, name_len) == 0 &&
+            entry_pid != mypid) {
+            pid = entry_pid;
+        }
+        offset += (size_t)entry_size;
     }
 
     free(buf);
@@ -263,53 +283,139 @@ typedef struct app_info {
 
 int sceKernelGetAppInfo(pid_t pid, app_info_t *info);
 
+static bool patch_new_shellui(pid_t pid, pid_t *patched_pid) {
+    if (pid <= 0 || pid == *patched_pid) {
+        return true;
+    }
+
+    LOG_PRINTF("Patching shellui instance (pid %d)...\n", pid);
+    if (patch_shellui(pid) != 0) {
+        return false;
+    }
+
+    *patched_pid = pid;
+    return true;
+}
+
 static void *shellui_patch_thread(void *arg) {
-    // patch currently running shellui
-    pid_t shellui_pid = find_pid("SceShellUI");
-    if (shellui_pid < 0) {
-        LOG_PUTS("Failed to find SceShellUI pid, patcher thread exiting...");
-        return NULL;
-    }
-
-    patch_shellui(shellui_pid);
-
-    // shellui is restarted after rest mode, wait for new instances
-    int kq = kqueue();
-    if (kq < 0) {
-        LOG_PERROR("kqueue");
-        return NULL;
-    }
-
-    pid_t syscore_pid = find_pid("SceSysCore.elf");
-    if (syscore_pid < 0) {
-        LOG_PUTS("Failed to find SceSysCore.elf pid, patcher thread exiting...");
-        close(kq);
-        return NULL;
-    }
-
-    struct kevent kev;
-    EV_SET(&kev, syscore_pid, EVFILT_PROC, EV_ADD | EV_ENABLE | EV_CLEAR,
-           NOTE_FORK | NOTE_EXEC | NOTE_TRACK, 0, NULL);
-
-    int ret = kevent(kq, &kev, 1, NULL, 0, NULL);
-    if (ret < 0) {
-        LOG_PERROR("kevent");
-        close(kq);
-        return NULL;
-    }
+    pid_t patched_pid = -1;
+    pid_t syscore_pid = -1;
+    int retry_checks = 0;
+    bool retry_until_patched = false;
+    int kq = -1;
 
     while (1) {
+        if (kq < 0) {
+            // shellui is restarted after rest mode, wait for new instances
+            kq = kqueue();
+            if (kq < 0) {
+                LOG_PERROR("kqueue");
+                sleep(1);
+                continue;
+            }
+        }
+
+        if (syscore_pid < 0) {
+            syscore_pid = find_pid("SceSysCore.elf");
+            if (syscore_pid < 0) {
+                // SceSysCore may be temporarily absent during resume.
+                pid_t shellui_pid = find_pid("SceShellUI");
+                if (shellui_pid > 0) {
+                    retry_until_patched = !patch_new_shellui(shellui_pid,
+                                                               &patched_pid);
+                    retry_checks = 0;
+                }
+                sleep(1);
+                continue;
+            }
+
+            struct kevent kev;
+            EV_SET(&kev, syscore_pid, EVFILT_PROC, EV_ADD | EV_ENABLE | EV_CLEAR,
+                   NOTE_FORK | NOTE_EXEC | NOTE_TRACK | NOTE_EXIT, 0, NULL);
+            if (kevent(kq, &kev, 1, NULL, 0, NULL) < 0) {
+                LOG_PERROR("kevent register SceSysCore");
+                close(kq);
+                kq = -1;
+                syscore_pid = -1;
+                sleep(1);
+                continue;
+            }
+
+            // Cover a ShellUI instance that started before the event filter.
+            pid_t shellui_pid = find_pid("SceShellUI");
+            if (shellui_pid > 0) {
+                retry_until_patched = !patch_new_shellui(shellui_pid,
+                                                           &patched_pid);
+                retry_checks = 0;
+            } else if (shellui_pid == PID_LOOKUP_ERROR) {
+                retry_until_patched = true;
+                retry_checks = 0;
+            }
+        }
+
         struct kevent event;
-        int nev = kevent(kq, NULL, 0, &event, 1, NULL);
-        if (nev == 0) {
+        struct timespec timeout = {1, 0};
+        int nev = kevent(kq, NULL, 0, &event, 1,
+                         (retry_until_patched || retry_checks > 0) ? &timeout : NULL);
+        if (nev < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            LOG_PERROR("kevent wait for SceShellUI");
+            close(kq);
+            kq = -1;
+            syscore_pid = -1;
+            sleep(1);
             continue;
         }
 
-        if (nev < 0) {
-            LOG_PERROR("kevent2");
-            LOG_PUTS("kevent failed, patcher thread exiting...");
+        if (nev == 0) {
+            pid_t shellui_pid = find_pid("SceShellUI");
+            if (shellui_pid == PID_LOOKUP_ERROR) {
+                retry_until_patched = true;
+                retry_checks = 0;
+            } else if (shellui_pid > 0 && shellui_pid != patched_pid) {
+                retry_until_patched = !patch_new_shellui(shellui_pid,
+                                                           &patched_pid);
+                retry_checks = 0;
+            } else {
+                if (shellui_pid > 0 && shellui_pid == patched_pid) {
+                    retry_until_patched = false;
+                }
+                if (retry_checks > 0) {
+                    --retry_checks;
+                }
+            }
+            continue;
+        }
+
+        if (event.flags & EV_ERROR) {
+            errno = (int)event.data;
+            LOG_PERROR("SceSysCore process watch failed");
             close(kq);
-            return NULL;
+            kq = -1;
+            syscore_pid = -1;
+            sleep(1);
+            continue;
+        }
+
+        if (event.ident == (uintptr_t)syscore_pid &&
+            (event.fflags & NOTE_EXIT)) {
+            close(kq);
+            kq = -1;
+            syscore_pid = -1;
+            patched_pid = -1;
+            retry_checks = 0;
+            retry_until_patched = false;
+            continue;
+        }
+
+        if (event.fflags & NOTE_TRACKERR) {
+            LOG_PUTS("Failed to track a SceSysCore child; re-registering");
+            close(kq);
+            kq = -1;
+            syscore_pid = -1;
+            continue;
         }
 
         if (!(event.fflags & NOTE_EXEC)) {
@@ -317,22 +423,21 @@ static void *shellui_patch_thread(void *arg) {
         }
 
         pid_t new_pid = event.ident;
-
         app_info_t appinfo;
         if (sceKernelGetAppInfo(new_pid, &appinfo)) {
             LOG_PERROR("sceKernelGetAppInfo");
+            retry_checks = SHELLUI_EVENT_RETRY_CHECKS;
+            retry_until_patched = false;
             continue;
         }
-
-        if (strcmp(appinfo.title_id, "NPXS40087") != 0) {
-            // not shellui, ignore
-            continue;
-        }
-
-        LOG_PRINTF("Patching new shellui instance (pid %d)...\n", new_pid);
-        if (patch_shellui(new_pid) == 0) {
-            klog_printf("[kstuff.elf] resume recovery completed\n");
-            notify("kstuff restored after rest mode");
+        if (strncmp(appinfo.title_id, "NPXS40087",
+                    sizeof(appinfo.title_id)) == 0) {
+            retry_until_patched = !patch_new_shellui(new_pid, &patched_pid);
+            retry_checks = 0;
+        } else if (appinfo.title_id[0] == '\0') {
+            // The title ID may not be ready at the instant NOTE_EXEC fires.
+            retry_checks = SHELLUI_EVENT_RETRY_CHECKS;
+            retry_until_patched = false;
         }
     }
 
@@ -343,6 +448,7 @@ int start_shellui_patch_thread() {
     pthread_t thread;
     int ret = pthread_create(&thread, NULL, shellui_patch_thread, NULL);
     if (ret != 0) {
+        errno = ret;
         LOG_PERROR("pthread_create");
         return -1;
     }

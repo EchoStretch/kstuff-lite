@@ -72,9 +72,6 @@ int sceKernelSetProcessName(const char *name);
 #define IOVEC_ENTRY(x) { (void*)(x), (x) ? strlen(x) + 1 : 0 }
 #define IOVEC_SIZE(x)  (sizeof(x) / sizeof(struct iovec))
 
-// Global flag to prevent our own mounting actions from causing an infinite loop
-static bool g_is_mounting = false;
-
 static int automount_disabled(void) {
     return access("/data/.kstuff_noautomount", F_OK) == 0;
 }
@@ -288,6 +285,9 @@ static int bind_mount_all_titles(const char* path) {
     }
 
     while ((entry = readdir(dir))) {
+        if (automount_disabled()) {
+            break;
+        }
         if (strlen(entry->d_name) != 9) {
             continue;
         }
@@ -311,58 +311,207 @@ static int bind_mount_all_titles(const char* path) {
 }
 
 static int scan_and_mount_titles(void) {
-
-    g_is_mounting = true;
+    if (automount_disabled()) {
+        return 0;
+    }
     if (bind_mount_all_titles("/user/app") < 0) {
         klog_perror("Failed to bind mount /user/app titles");
-        g_is_mounting = false;
         return -1;
     }
-    g_is_mounting = false;
 
     return 0;
 }
 
-static int monitor_usb_changes(void) {
+static const char *const watch_paths[] = {
+    "/mnt",
+    "/mnt/usb0", "/mnt/usb1", "/mnt/usb2", "/mnt/usb3",
+    "/mnt/usb4", "/mnt/usb5", "/mnt/usb6", "/mnt/usb7"
+};
+
+#define WATCH_COUNT (sizeof(watch_paths) / sizeof(watch_paths[0]))
+
+static bool mounted_usb_roots(unsigned int *mask) {
+    struct stat parent;
+    if (stat(watch_paths[0], &parent) != 0) {
+        return false;
+    }
+
+    *mask = 0;
+    for (size_t i = 1; i < WATCH_COUNT; i++) {
+        struct stat root;
+        if (stat(watch_paths[i], &root) == 0 &&
+            root.st_dev != parent.st_dev) {
+            *mask |= 1u << (i - 1);
+        }
+    }
+    return true;
+}
+
+static void refresh_directory_watch(int kq, int *fd, const char *path) {
+    struct stat current;
+    if (stat(path, &current) != 0) {
+        if (*fd >= 0) {
+            close(*fd);
+            *fd = -1;
+        }
+        return;
+    }
+
+    if (*fd >= 0) {
+        struct stat watched;
+        if (fstat(*fd, &watched) != 0 ||
+            watched.st_dev != current.st_dev ||
+            watched.st_ino != current.st_ino) {
+            close(*fd);
+            *fd = -1;
+        }
+    }
+    if (*fd >= 0) {
+        return;
+    }
+
+    int new_fd = open(path, O_RDONLY | O_DIRECTORY);
+    if (new_fd < 0) {
+        return;
+    }
     struct kevent evt;
-    int kq;
-
-    if ((kq = kqueue()) < 0) {
-        klog_perror("Failed to create kqueue");
-        return -1;
+    EV_SET(&evt, new_fd, EVFILT_VNODE, EV_ADD | EV_ENABLE | EV_CLEAR,
+           NOTE_WRITE | NOTE_EXTEND | NOTE_ATTRIB | NOTE_DELETE |
+           NOTE_RENAME | NOTE_REVOKE, 0, NULL);
+    if (kevent(kq, &evt, 1, NULL, 0, NULL) != 0) {
+        close(new_fd);
+        return;
     }
+    *fd = new_fd;
+}
 
-    EV_SET(&evt, 0, EVFILT_FS, EV_ADD | EV_CLEAR, 0, 0, 0);
-    if (kevent(kq, &evt, 1, NULL, 0, NULL) < 0) {
-        klog_perror("Failed to register usb event filter with kevent");
-        close(kq);
-        return -1;
+static void close_directory_watches(int fds[WATCH_COUNT]) {
+    for (size_t i = 0; i < WATCH_COUNT; i++) {
+        if (fds[i] >= 0) {
+            close(fds[i]);
+            fds[i] = -1;
+        }
     }
+}
+
+static void monitor_usb_changes(void) {
+    struct kevent evt;
+    int kq = -1;
+    int watch_fds[WATCH_COUNT];
+    for (size_t i = 0; i < WATCH_COUNT; i++) {
+        watch_fds[i] = -1;
+    }
+    unsigned int mounted_mask = 0;
+    bool mounted_mask_valid = false;
+    bool automount_active = false;
+    bool scan_pending = false;
+    bool disabled_logged = false;
 
     while (1) {
-        if (kevent(kq, NULL, 0, &evt, 1, NULL) < 0) {
+        if (automount_disabled()) {
+            if (!disabled_logged) {
+                if (kq >= 0) {
+                    close(kq);
+                    kq = -1;
+                }
+                close_directory_watches(watch_fds);
+                automount_active = false;
+                mounted_mask_valid = false;
+                scan_pending = false;
+                klog_printf("Automount disabled by /data/.kstuff_noautomount\n");
+                disabled_logged = true;
+            }
+            sleep(1);
+            continue;
+        }
+
+        disabled_logged = false;
+        if (!automount_active) {
+            mounted_mask_valid = mounted_usb_roots(&mounted_mask);
+            klog_printf("Remounting /system_ex and mounting titles with image support...\n");
+            remount_system_ex();
+            scan_and_mount_titles();
+            automount_active = true;
+        }
+
+        unsigned int current_mask;
+        if (mounted_usb_roots(&current_mask)) {
+            if (mounted_mask_valid && current_mask != mounted_mask) {
+                for (size_t i = 1; i < WATCH_COUNT; i++) {
+                    unsigned int bit = 1u << (i - 1);
+                    if ((current_mask & bit) != (mounted_mask & bit)) {
+                        klog_printf("USB storage %s: %s\n", (current_mask & bit) ?
+                                    "connected" : "disconnected", watch_paths[i]);
+                    }
+                }
+            }
+            if ((!mounted_mask_valid && current_mask) ||
+                (mounted_mask_valid && (current_mask & ~mounted_mask))) {
+                scan_pending = true;
+            }
+            mounted_mask = current_mask;
+            mounted_mask_valid = true;
+        }
+
+        if (kq < 0) {
+            kq = kqueue();
+            if (kq < 0) {
+                klog_perror("Failed to create kqueue");
+            }
+        }
+
+        if (kq >= 0) {
+            for (size_t i = 0; i < WATCH_COUNT; i++) {
+                refresh_directory_watch(kq, &watch_fds[i], watch_paths[i]);
+            }
+        }
+
+        if (scan_pending) {
+            sleep(1); // let newly mounted storage settle
+            if (!automount_disabled() && scan_and_mount_titles() < 0) {
+                klog_perror("Failed to scan and bind mount titles after USB change");
+            }
+            scan_pending = false;
+            continue;
+        }
+
+        if (kq < 0) {
+            sleep(1);
+            continue;
+        }
+
+        struct timespec timeout = {1, 0};
+        int nev = kevent(kq, NULL, 0, &evt, 1, &timeout);
+        if (nev < 0) {
             if (errno == EINTR) {
                 continue;
             }
             klog_perror("kevent wait failed while monitoring USB changes");
-            break;
+            close(kq);
+            kq = -1;
+            close_directory_watches(watch_fds);
+            continue;
         }
-
-        // If this event was triggered by our own scanning modifications, skip it
-        if (g_is_mounting) {
+        if (nev > 0 && (evt.flags & EV_ERROR)) {
+            errno = (int)evt.data;
+            klog_perror("USB watch failed");
+            close(kq);
+            kq = -1;
+            close_directory_watches(watch_fds);
             continue;
         }
 
-        // Add a minor settling delay for USB descriptor stabilization
-        sleep(1);
-
-        if (scan_and_mount_titles() < 0) {
-            klog_perror("Failed to scan and bind mount titles after USB change");
+        if (nev > 0 && evt.filter == EVFILT_VNODE) {
+            for (size_t i = 1; i < WATCH_COUNT; i++) {
+                if (evt.ident == (uintptr_t)watch_fds[i] &&
+                    (mounted_mask & (1u << (i - 1))) &&
+                    (evt.fflags & (NOTE_WRITE | NOTE_EXTEND))) {
+                    scan_pending = true;
+                    break;
+                }
+            }
         }
     }
-
-    close(kq);
-    return 0;
 }
 
 static void
@@ -441,14 +590,6 @@ int main(void) {
         *args->payloadout = patch_app_db();
     }
     start_shellui_patch_thread();
-    
-    if (automount_disabled()) {
-        klog_printf("Automount disabled by /data/.kstuff_noautomount\n");
-    } else {
-        klog_printf("Remounting /system_ex and mounting titles with image support...\n");
-        remount_system_ex();
-        scan_and_mount_titles();
-    }
 
     monitor_usb_changes();
 
