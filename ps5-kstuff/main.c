@@ -1243,7 +1243,7 @@ enum kit_type kit = get_kit_type();
 static int patch_shellcore(const struct shellcore_patch* patches, size_t n_patches, uint64_t eh_frame_offset)
 {
     shellcore_patch_failure = 0;
-    int install_fpkg_hook = get_kit_type() == KIT_RETAIL && patches;
+    int install_fpkg_hook = patches != 0;
     if(install_fpkg_hook && (!kstuff_dynlib_handle || !kstuff_dynlib_resolve
                          || !kstuff_shellcore_imports))
         return shellcore_ppr_fail("fpkg scope: SDK resolver unavailable");
