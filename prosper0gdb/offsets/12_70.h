@@ -73,7 +73,7 @@ DEF(syscall_cfi_table_jmp_int3, -0xa3d130)
 DEF(cr0_load, -0x9EDBFC)
 DEF(cr0_clear_store, -0x5C28A3)
 DEF(cr0_write_ret, -0x5884C3)
-DEF(store_rax_rdi, -0xA8406E)
+DEF(store_rax_rdi, -0xAA406E)
 
 
 // PPR/fPKG offsets
