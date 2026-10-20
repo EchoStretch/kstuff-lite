@@ -22,6 +22,7 @@ static struct shellcore_patch shellcore_patches_1360_retail[] = {
     {0x181EBF0, "\x31\xc0\xc3", 3}, // VR
     {0x1823150, "\x31\xC0\xC3", 3}, // VR2 Update bypass
     {0x69C6CA, "\x66\x90", 2}, // force getSceSysDirPath to take isDebuggerOrAppHomeLaunchedApp=1 path, by ArkSama
+    {0x8239BF, "\xeb\x46", 2}, // preserve supplied launch-context title ID; skip override to 0x823A07
     {0xBE214A, "\xEB", 1}, // fix trophies not unlocking in certain games
     {0xBBF0C3, "\xeb\x03", 2}, // disable game error message
 
