@@ -24,6 +24,11 @@ static struct shellcore_patch shellcore_patches_1360_retail[] = {
     {0x69C6CA, "\x66\x90", 2}, // force getSceSysDirPath to take isDebuggerOrAppHomeLaunchedApp=1 path, by ArkSama
     {0x8239BF, "\xeb\x46", 2}, // preserve supplied launch-context title ID; skip override to 0x823A07
     {0xBE214A, "\xEB", 1}, // fix trophies not unlocking in certain games
+    // Legacy NP binding: directory-launched PS4 titles use source kind 2.
+    // Let kinds 2/3 resolve their normal npbind.dat path instead of returning
+    // success with an empty path. Kinds above 3 retain the unsupported error.
+    {0xBCE5EA, "\x90\x90", 2},
+    {0xBCE5F3, "\x03", 1}, // cmp ecx, 3 (previously cmp ecx, 1)
     {0xBBF0C3, "\xeb\x03", 2}, // disable game error message
 
     // Allow ps4_nongame_mini launches through the three category checks.
