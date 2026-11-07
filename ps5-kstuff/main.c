@@ -1240,6 +1240,8 @@ enum kit_type kit = get_kit_type();
     return patches;
 }
 
+#include "shellcore_hook/ps4_folder_metadata_1360.h"
+
 static int patch_shellcore(const struct shellcore_patch* patches, size_t n_patches, uint64_t eh_frame_offset)
 {
     shellcore_patch_failure = 0;
@@ -1283,6 +1285,10 @@ static int patch_shellcore(const struct shellcore_patch* patches, size_t n_patch
     if(install_fpkg_hook
     && install_shellcore_ppr_hook(pid, shellcore_base, text_end,
                                   dmap, cr3, &locked))
+        return -1;
+    if(install_fpkg_hook
+    && install_shellcore_folder_metadata_1360(pid, shellcore_base, text_end,
+                                             dmap, cr3, &locked))
         return -1;
     return 0;
 }
