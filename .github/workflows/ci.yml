@@ -17,7 +17,18 @@ concurrency:
 
 jobs:
   payload-build:
+    name: Payload (KSTUFF_OBS=${{ matrix.kstuff_obs }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kstuff_obs: '0'
+            artifact_name: Payload
+          - kstuff_obs: '1'
+            artifact_name: Payload-observability
+    env:
+      KSTUFF_OBS: ${{ matrix.kstuff_obs }}
     steps:
 
     - name: Checkout
@@ -38,9 +49,27 @@ jobs:
         export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
         bash ci-ps5-kstuff-ldr.sh
 
+    - name: Verify build outputs
+      run: |
+        test -s ps5-kstuff-ldr/kstuff.elf
+        if [ "$KSTUFF_OBS" = 1 ]; then
+          test -s ps5-kstuff/debug-reader.elf
+          test -s ps5-kstuff/debug-reader.bin
+        fi
+
     - name: Upload Payload
       uses: actions/upload-artifact@v4
       with:
-        name: Payload
+        name: ${{ matrix.artifact_name }}
         path: ./ps5-kstuff-ldr/kstuff.elf
+        if-no-files-found: error
+
+    - name: Upload debug reader
+      if: matrix.kstuff_obs == '1'
+      uses: actions/upload-artifact@v4
+      with:
+        name: Debug-reader-observability
+        path: |
+          ./ps5-kstuff/debug-reader.elf
+          ./ps5-kstuff/debug-reader.bin
         if-no-files-found: error
